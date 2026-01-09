@@ -477,6 +477,6 @@ class OpenPLCUserManager(UserManager):
                 log_error(f"bcrypt validation error: {e}")
                 return False
         else:
-            # Fallback to simple comparison (not secure for production)
-            log_warn("bcrypt not available, using insecure password comparison")
-            return password == password_hash
+            # Fail securely - bcrypt is required for password authentication
+            log_error("bcrypt not available - password authentication disabled for security")
+            return False
