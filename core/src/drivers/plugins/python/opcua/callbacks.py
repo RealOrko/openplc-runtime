@@ -160,13 +160,19 @@ class PermissionCallbackHandler:
             # Check user's read permission
             if user and hasattr(user, 'openplc_role'):
                 user_role = self._normalize_role(user.openplc_role)
+                username = getattr(user, 'username', 'unknown')
                 role_permission = getattr(permissions, user_role, "")
 
                 if "r" not in str(role_permission):
-                    username = getattr(user, 'username', 'unknown')
                     log_warn(f"DENY read for user {username} "
                              f"(role: {user_role}) on node {simple_node_id}")
                     raise ua.UaError("Access denied: insufficient read permissions")
+            else:
+                # Anonymous or unauthenticated client - check viewer permissions
+                viewer_perm = getattr(permissions, 'viewer', '')
+                if "r" not in str(viewer_perm):
+                    log_warn(f"DENY read for anonymous client on node {simple_node_id}")
+                    raise ua.UaError("Access denied: anonymous read not allowed")
 
     async def _on_pre_write(self, event: Any, dispatcher: Any) -> None:
         """
@@ -316,20 +322,52 @@ class PermissionCallbackHandler:
 
     def _normalize_role(self, role: Any) -> str:
         """
-        Normalize role to string format.
+        Normalize role to OpenPLC role string format.
 
         Handles UserRole enum, string, and other formats.
+        Maps asyncua UserRole enum to OpenPLC roles:
+        - UserRole.Admin -> "engineer"
+        - UserRole.User -> "viewer"
 
         Args:
             role: The role value (enum, string, or other)
 
         Returns:
-            Lowercase role string
+            OpenPLC role string: "viewer", "operator", or "engineer"
         """
+        # Handle string roles directly
+        if isinstance(role, str):
+            role_lower = role.lower()
+            # Check if it's a valid OpenPLC role
+            if role_lower in ("viewer", "operator", "engineer"):
+                return role_lower
+            # Handle asyncua role string representations
+            if "admin" in role_lower:
+                return "engineer"
+            if "user" in role_lower:
+                return "viewer"
+            return role_lower
+
+        # Handle enum with name attribute (like asyncua UserRole)
         if hasattr(role, 'name'):
-            # UserRole enum
-            return role.name.lower()
-        elif isinstance(role, str):
-            return role.lower()
-        else:
-            return str(role).lower()
+            role_name = role.name.lower()
+            # Map asyncua UserRole to OpenPLC roles
+            if role_name == "admin":
+                return "engineer"
+            if role_name == "user":
+                return "viewer"
+            # Check if it's already an OpenPLC role name
+            if role_name in ("viewer", "operator", "engineer"):
+                return role_name
+            return role_name
+
+        # Fallback: convert to string and try to extract role
+        role_str = str(role).lower()
+        if "admin" in role_str:
+            return "engineer"
+        if "user" in role_str:
+            return "viewer"
+
+        # Default to viewer for unknown roles (most restrictive)
+        log_warn(f"Unknown role format '{role}', defaulting to 'viewer'")
+        return "viewer"

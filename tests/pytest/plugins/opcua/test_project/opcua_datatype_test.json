@@ -1,0 +1,473 @@
+[
+  {
+    "name": "opcua_datatype_test_server",
+    "protocol": "OPC-UA",
+    "config": {
+      "server": {
+        "name": "OpenPLC OPC-UA DataType Test Server",
+        "application_uri": "urn:openplc:opcua:datatype:test",
+        "product_uri": "urn:openplc:runtime:test",
+        "endpoint_url": "opc.tcp://localhost:4840/openplc/opcua/test",
+        "security_profiles": [
+          {
+            "name": "insecure",
+            "enabled": true,
+            "security_policy": "None",
+            "security_mode": "None",
+            "auth_methods": ["Anonymous"]
+          },
+          {
+            "name": "signed",
+            "enabled": true,
+            "security_policy": "Basic256Sha256",
+            "security_mode": "Sign",
+            "auth_methods": ["Username", "Certificate"]
+          },
+          {
+            "name": "signed_encrypted",
+            "enabled": true,
+            "security_policy": "Basic256Sha256",
+            "security_mode": "SignAndEncrypt",
+            "auth_methods": ["Username", "Certificate"]
+          }
+        ]
+      },
+      "security": {
+        "server_certificate_strategy": "auto_self_signed",
+        "server_certificate_custom": null,
+        "server_private_key_custom": null,
+        "trusted_client_certificates": []
+      },
+      "users": [
+        {
+          "type": "password",
+          "username": "viewer",
+          "password_hash": "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/X4P.yrGOsjw.5aYTK",
+          "role": "viewer"
+        },
+        {
+          "type": "password",
+          "username": "operator",
+          "password_hash": "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/X4P.yrGOsjw.5aYTK",
+          "role": "operator"
+        },
+        {
+          "type": "password",
+          "username": "engineer",
+          "password_hash": "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/X4P.yrGOsjw.5aYTK",
+          "role": "engineer"
+        }
+      ],
+      "cycle_time_ms": 100,
+      "address_space": {
+        "namespace_uri": "urn:openplc:opcua:datatype:test",
+        "namespace_index": 2,
+        "variables": [
+          {
+            "node_id": "PLC.Test.simple_bool",
+            "browse_name": "simple_bool",
+            "display_name": "Simple Bool",
+            "datatype": "BOOL",
+            "initial_value": false,
+            "description": "Boolean test variable",
+            "index": 0,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Test.simple_bool_true",
+            "browse_name": "simple_bool_true",
+            "display_name": "Simple Bool True",
+            "datatype": "BOOL",
+            "initial_value": true,
+            "description": "Boolean test variable initialized true",
+            "index": 1,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Test.simple_byte",
+            "browse_name": "simple_byte",
+            "display_name": "Simple Byte",
+            "datatype": "BYTE",
+            "initial_value": 0,
+            "description": "Byte test variable (0-255)",
+            "index": 2,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Test.simple_byte_max",
+            "browse_name": "simple_byte_max",
+            "display_name": "Simple Byte Max",
+            "datatype": "BYTE",
+            "initial_value": 255,
+            "description": "Byte test variable at max value",
+            "index": 3,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Test.simple_int",
+            "browse_name": "simple_int",
+            "display_name": "Simple Int",
+            "datatype": "INT",
+            "initial_value": 0,
+            "description": "16-bit signed integer test variable",
+            "index": 4,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Test.simple_int_negative",
+            "browse_name": "simple_int_negative",
+            "display_name": "Simple Int Negative",
+            "datatype": "INT",
+            "initial_value": -100,
+            "description": "16-bit signed integer negative value",
+            "index": 5,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Test.simple_int_max",
+            "browse_name": "simple_int_max",
+            "display_name": "Simple Int Max",
+            "datatype": "INT",
+            "initial_value": 32767,
+            "description": "16-bit signed integer at max value",
+            "index": 6,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Test.simple_int_min",
+            "browse_name": "simple_int_min",
+            "display_name": "Simple Int Min",
+            "datatype": "INT",
+            "initial_value": -32768,
+            "description": "16-bit signed integer at min value",
+            "index": 7,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Test.simple_dint",
+            "browse_name": "simple_dint",
+            "display_name": "Simple DInt",
+            "datatype": "DINT",
+            "initial_value": 0,
+            "description": "32-bit signed integer test variable",
+            "index": 8,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Test.simple_dint_large",
+            "browse_name": "simple_dint_large",
+            "display_name": "Simple DInt Large",
+            "datatype": "DINT",
+            "initial_value": 100000,
+            "description": "32-bit signed integer large value",
+            "index": 9,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Test.simple_dint_negative",
+            "browse_name": "simple_dint_negative",
+            "display_name": "Simple DInt Negative",
+            "datatype": "DINT",
+            "initial_value": -100000,
+            "description": "32-bit signed integer negative value",
+            "index": 10,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Test.simple_lint",
+            "browse_name": "simple_lint",
+            "display_name": "Simple LInt",
+            "datatype": "LINT",
+            "initial_value": 0,
+            "description": "64-bit signed integer test variable",
+            "index": 11,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Test.simple_lint_large",
+            "browse_name": "simple_lint_large",
+            "display_name": "Simple LInt Large",
+            "datatype": "LINT",
+            "initial_value": 1000000000,
+            "description": "64-bit signed integer large value",
+            "index": 12,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Test.simple_real",
+            "browse_name": "simple_real",
+            "display_name": "Simple Real",
+            "datatype": "REAL",
+            "initial_value": 0.0,
+            "description": "32-bit floating point test variable",
+            "index": 13,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Test.simple_real_pi",
+            "browse_name": "simple_real_pi",
+            "display_name": "Simple Real Pi",
+            "datatype": "REAL",
+            "initial_value": 3.14159,
+            "description": "32-bit floating point pi value",
+            "index": 14,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Test.simple_real_negative",
+            "browse_name": "simple_real_negative",
+            "display_name": "Simple Real Negative",
+            "datatype": "REAL",
+            "initial_value": -273.15,
+            "description": "32-bit floating point negative value",
+            "index": 15,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Test.simple_string",
+            "browse_name": "simple_string",
+            "display_name": "Simple String",
+            "datatype": "STRING",
+            "initial_value": "",
+            "description": "String test variable empty",
+            "index": 16,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Test.simple_string_hello",
+            "browse_name": "simple_string_hello",
+            "display_name": "Simple String Hello",
+            "datatype": "STRING",
+            "initial_value": "Hello OPC-UA",
+            "description": "String test variable with content",
+            "index": 17,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Test.cycle_counter",
+            "browse_name": "cycle_counter",
+            "display_name": "Cycle Counter",
+            "datatype": "DINT",
+            "initial_value": 0,
+            "description": "Internal cycle counter (readonly)",
+            "index": 70,
+            "permissions": {"viewer": "r", "operator": "r", "engineer": "r"}
+          },
+          {
+            "node_id": "PLC.Test.toggle_output",
+            "browse_name": "toggle_output",
+            "display_name": "Toggle Output",
+            "datatype": "BOOL",
+            "initial_value": false,
+            "description": "Toggle output for visual feedback (readonly)",
+            "index": 71,
+            "permissions": {"viewer": "r", "operator": "r", "engineer": "r"}
+          }
+        ],
+        "structures": [
+          {
+            "node_id": "PLC.Test.Structures.sensor1",
+            "browse_name": "sensor1",
+            "display_name": "Sensor 1",
+            "description": "Sensor data structure instance 1",
+            "fields": [
+              {
+                "name": "sensor_id",
+                "datatype": "INT",
+                "initial_value": 1,
+                "index": 20,
+                "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+              },
+              {
+                "name": "value",
+                "datatype": "REAL",
+                "initial_value": 0.0,
+                "index": 21,
+                "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+              },
+              {
+                "name": "is_valid",
+                "datatype": "BOOL",
+                "initial_value": false,
+                "index": 22,
+                "permissions": {"viewer": "r", "operator": "r", "engineer": "r"}
+              }
+            ]
+          },
+          {
+            "node_id": "PLC.Test.Structures.sensor2",
+            "browse_name": "sensor2",
+            "display_name": "Sensor 2",
+            "description": "Sensor data structure instance 2",
+            "fields": [
+              {
+                "name": "sensor_id",
+                "datatype": "INT",
+                "initial_value": 2,
+                "index": 26,
+                "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+              },
+              {
+                "name": "value",
+                "datatype": "REAL",
+                "initial_value": 25.5,
+                "index": 27,
+                "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+              },
+              {
+                "name": "is_valid",
+                "datatype": "BOOL",
+                "initial_value": true,
+                "index": 28,
+                "permissions": {"viewer": "r", "operator": "r", "engineer": "r"}
+              }
+            ]
+          },
+          {
+            "node_id": "PLC.Test.Structures.robot_position",
+            "browse_name": "robot_position",
+            "display_name": "Robot Position",
+            "description": "3D position structure for robot",
+            "fields": [
+              {
+                "name": "x",
+                "datatype": "REAL",
+                "initial_value": 0.0,
+                "index": 32,
+                "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+              },
+              {
+                "name": "y",
+                "datatype": "REAL",
+                "initial_value": 0.0,
+                "index": 33,
+                "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+              },
+              {
+                "name": "z",
+                "datatype": "REAL",
+                "initial_value": 0.0,
+                "index": 34,
+                "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+              }
+            ]
+          },
+          {
+            "node_id": "PLC.Test.Structures.target_position",
+            "browse_name": "target_position",
+            "display_name": "Target Position",
+            "description": "3D position structure for target",
+            "fields": [
+              {
+                "name": "x",
+                "datatype": "REAL",
+                "initial_value": 100.0,
+                "index": 38,
+                "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+              },
+              {
+                "name": "y",
+                "datatype": "REAL",
+                "initial_value": 50.0,
+                "index": 39,
+                "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+              },
+              {
+                "name": "z",
+                "datatype": "REAL",
+                "initial_value": 25.0,
+                "index": 40,
+                "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+              }
+            ]
+          },
+          {
+            "node_id": "PLC.Test.Structures.plc_status",
+            "browse_name": "plc_status",
+            "display_name": "PLC Status",
+            "description": "Device status structure with mixed types",
+            "fields": [
+              {
+                "name": "device_name",
+                "datatype": "STRING",
+                "initial_value": "OpenPLC",
+                "index": 44,
+                "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+              },
+              {
+                "name": "error_code",
+                "datatype": "DINT",
+                "initial_value": 0,
+                "index": 45,
+                "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+              },
+              {
+                "name": "temperature",
+                "datatype": "REAL",
+                "initial_value": 45.5,
+                "index": 46,
+                "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+              },
+              {
+                "name": "is_online",
+                "datatype": "BOOL",
+                "initial_value": true,
+                "index": 47,
+                "permissions": {"viewer": "r", "operator": "r", "engineer": "r"}
+              },
+              {
+                "name": "uptime_seconds",
+                "datatype": "LINT",
+                "initial_value": 0,
+                "index": 48,
+                "permissions": {"viewer": "r", "operator": "r", "engineer": "r"}
+              }
+            ]
+          }
+        ],
+        "arrays": [
+          {
+            "node_id": "PLC.Test.Arrays.bool_array",
+            "browse_name": "bool_array",
+            "display_name": "Bool Array",
+            "datatype": "BOOL",
+            "length": 8,
+            "initial_value": false,
+            "index": 50,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Test.Arrays.int_array",
+            "browse_name": "int_array",
+            "display_name": "Int Array",
+            "datatype": "INT",
+            "length": 5,
+            "initial_value": 0,
+            "index": 58,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Test.Arrays.real_array",
+            "browse_name": "real_array",
+            "display_name": "Real Array",
+            "datatype": "REAL",
+            "length": 4,
+            "initial_value": 0.0,
+            "index": 63,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Test.Arrays.dint_array",
+            "browse_name": "dint_array",
+            "display_name": "DInt Array",
+            "datatype": "DINT",
+            "length": 3,
+            "initial_value": 0,
+            "index": 67,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          }
+        ]
+      }
+    }
+  }
+]

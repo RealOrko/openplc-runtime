@@ -158,7 +158,15 @@ def convert_value_for_plc(datatype: str, value: Any) -> Any:
 
 
 def infer_var_type(size: int) -> str:
-    """Infer variable type from size."""
+    """
+    Infer variable type from size.
+
+    Args:
+        size: Size of the variable in bytes
+
+    Returns:
+        String indicating the inferred type or type category
+    """
     if size == 1:
         return "BOOL_OR_SINT"
     elif size == 2:
@@ -167,5 +175,8 @@ def infer_var_type(size: int) -> str:
         return "UINT32_OR_TIME"
     elif size == 8:
         return "UINT64_OR_TIME"
+    elif size == 127:
+        # IEC_STRING: 1 byte len + 126 bytes body = 127 bytes
+        return "STRING"
     else:
         return "UNKNOWN"
