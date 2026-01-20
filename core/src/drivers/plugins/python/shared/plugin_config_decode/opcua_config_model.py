@@ -158,12 +158,19 @@ class VariablePermissions:
 
 @dataclass
 class VariableField:
-    """Field within a struct variable."""
+    """
+    Field within a struct variable.
+
+    Supports nested fields for complex types (FB instances, nested structs).
+    When a field has nested fields, its index will be None since only leaf
+    fields have actual debug variable indices.
+    """
     name: str
     datatype: str
     initial_value: Any
-    index: int
+    index: Optional[int]  # None for complex types that have nested fields
     permissions: VariablePermissions
+    fields: Optional[List['VariableField']] = None  # Nested fields for complex types
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'VariableField':
@@ -172,19 +179,25 @@ class VariableField:
             name = data["name"]
             datatype = data["datatype"]
             initial_value = data["initial_value"]
-            index = data["index"]
+            index = data["index"]  # Can be None for complex types
             permissions_data = data["permissions"]
         except KeyError as e:
             raise ValueError(f"Missing required field in variable field: {e}")
 
         permissions = VariablePermissions.from_dict(permissions_data)
 
+        # Parse nested fields if present (recursive)
+        nested_fields = None
+        if "fields" in data and data["fields"]:
+            nested_fields = [VariableField.from_dict(f) for f in data["fields"]]
+
         return cls(
             name=name,
             datatype=datatype,
             initial_value=initial_value,
             index=index,
-            permissions=permissions
+            permissions=permissions,
+            fields=nested_fields
         )
 
 @dataclass
@@ -433,10 +446,20 @@ class OpcuaMasterConfig(PluginConfigContract):
                 raise ValueError(f"Duplicate node_ids found in plugin '{plugin.name}'")
 
             # Check for duplicate indices
+            # Helper to collect indices recursively from nested fields
+            def collect_field_indices(fields: List[VariableField]) -> List[int]:
+                indices = []
+                for field in fields:
+                    if field.index is not None:  # Skip None indices (complex types)
+                        indices.append(field.index)
+                    if field.fields:  # Recurse into nested fields
+                        indices.extend(collect_field_indices(field.fields))
+                return indices
+
             all_indices = []
             all_indices.extend([var.index for var in address_space.variables])
             for struct in address_space.structures:
-                all_indices.extend([field.index for field in struct.fields])
+                all_indices.extend(collect_field_indices(struct.fields))
             all_indices.extend([arr.index for arr in address_space.arrays])
 
             if len(all_indices) != len(set(all_indices)):

@@ -234,6 +234,10 @@ class AddressSpaceBuilder:
         """
         Create a field within a struct.
 
+        Supports nested fields for complex types (FB instances, nested structs).
+        When a field has nested fields, creates an Object node and recursively
+        creates child fields. Leaf fields (no nested fields) create Variable nodes.
+
         Args:
             parent_node: Parent struct object node
             struct_node_id: Parent struct's node_id for building field path
@@ -241,6 +245,31 @@ class AddressSpaceBuilder:
         """
         field_node_id = f"{struct_node_id}.{field.name}"
 
+        # Check if this is a complex type with nested fields
+        if field.fields and len(field.fields) > 0:
+            # Create an Object node for complex types (FB instances, nested structs)
+            field_obj = await parent_node.add_object(
+                self.namespace_idx,
+                field.name
+            )
+
+            # Set display name
+            await field_obj.write_attribute(
+                ua.AttributeIds.DisplayName,
+                ua.DataValue(ua.Variant(
+                    ua.LocalizedText(field.name),
+                    ua.VariantType.LocalizedText
+                ))
+            )
+
+            # Recursively create nested fields
+            for nested_field in field.fields:
+                await self._create_struct_field(field_obj, field_node_id, nested_field)
+
+            log_info(f"Created nested object {field_node_id} with {len(field.fields)} fields")
+            return
+
+        # This is a leaf field - create a Variable node
         opcua_type = map_plc_to_opcua_type(field.datatype)
         initial_value = convert_value_for_opcua(field.datatype, field.initial_value)
 
@@ -266,21 +295,25 @@ class AddressSpaceBuilder:
         if has_write_permission:
             await node.set_writable()
 
-        # Store node mapping
-        access_mode = "readwrite" if has_write_permission else "readonly"
-        var_node = VariableNode(
-            node=node,
-            debug_var_index=field.index,
-            datatype=field.datatype,
-            access_mode=access_mode,
-            is_array_element=False
-        )
+        # Store node mapping (only for leaf fields with valid indices)
+        if field.index is not None:
+            access_mode = "readwrite" if has_write_permission else "readonly"
+            var_node = VariableNode(
+                node=node,
+                debug_var_index=field.index,
+                datatype=field.datatype,
+                access_mode=access_mode,
+                is_array_element=False
+            )
 
-        self.variable_nodes[field.index] = var_node
-        self.node_permissions[field_node_id] = field.permissions
-        self.nodeid_to_variable[node.nodeid] = field_node_id
+            self.variable_nodes[field.index] = var_node
+            self.node_permissions[field_node_id] = field.permissions
+            self.nodeid_to_variable[node.nodeid] = field_node_id
 
-        log_info(f"Created field {field_node_id} (index: {field.index})")
+            log_info(f"Created field {field_node_id} (index: {field.index})")
+        else:
+            # Complex types (FBs, nested structs) have null indices - only leaf fields have indices
+            log_info(f"Field {field_node_id} is a complex type (no index) - skipping node mapping")
 
     async def _create_array(
         self,
