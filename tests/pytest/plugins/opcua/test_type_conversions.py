@@ -244,15 +244,19 @@ class TestConvertValueForOpcua:
         """TOD from tuple should convert to DateTime with current date + time."""
         from datetime import datetime, timezone
 
+        # Capture the date before conversion to avoid flakiness across midnight
+        today_before = datetime.now(timezone.utc).date()
+
         # 1 hour = 3600 seconds since midnight -> 01:00:00
         result = convert_value_for_opcua("TOD", (3600, 0))
         assert isinstance(result, datetime)
         assert result.hour == 1
         assert result.minute == 0
         assert result.second == 0
-        # Date should be today
-        today = datetime.now(timezone.utc).date()
-        assert result.date() == today
+        # Date should correspond to the current date at the time of conversion,
+        # allowing for the possibility that midnight passes during the test.
+        today_after = datetime.now(timezone.utc).date()
+        assert today_before <= result.date() <= today_after
 
         # 1 hour + 30 minutes + 45 seconds = 5445 seconds
         result2 = convert_value_for_opcua("TOD", (5445, 500_000_000))
