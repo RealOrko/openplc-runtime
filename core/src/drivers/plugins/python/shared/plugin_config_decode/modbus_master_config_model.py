@@ -12,6 +12,8 @@ except ImportError:
 
 Area = Literal["I", "Q", "M"]
 Size = Literal["X", "B", "W", "D", "L"]
+TransportType = Literal["tcp", "rtu"]
+ParityType = Literal["N", "E", "O"]
 
 ADDR_RE = re.compile(r"^%([IQM])([XBWDL])(\d+)(?:\.(\d+))?$", re.IGNORECASE)
 
@@ -65,15 +67,30 @@ def parse_iec_address(s: str) -> IECAddress:
 class ModbusDeviceConfig:
     """
     Model for a single Modbus device configuration.
+    Supports both TCP and RTU transport types.
     """
     def __init__(self):
         self.name: str = "UNDEFINED"
         self.protocol: str = "MODBUS"
         self.type: str = "SLAVE"
+
+        # Transport type - "tcp" or "rtu" (defaults to "tcp" for backward compatibility)
+        self.transport: TransportType = "tcp"
+
+        # TCP-specific fields
         self.host: str = "127.0.0.1"
         self.port: int = 502
+
+        # RTU-specific fields
+        self.serial_port: str = ""
+        self.baud_rate: int = 9600
+        self.parity: ParityType = "N"
+        self.stop_bits: int = 1
+        self.data_bits: int = 8
+
+        # Common fields
         self.timeout_ms: int = 1000
-        self.slave_id: int = 1  # Unit/Slave ID for Modbus TCP gateways (0-255)
+        self.slave_id: int = 1  # Unit/Slave ID (0-255 for TCP gateways, 1-247 for RTU)
         self.io_points: List['ModbusIoPointConfig'] = []
 
     @classmethod
@@ -87,8 +104,22 @@ class ModbusDeviceConfig:
 
         config = data.get("config", {})
         device.type = config.get("type", "SLAVE")
+
+        # Transport type - defaults to "tcp" for backward compatibility
+        device.transport = config.get("transport", "tcp")
+
+        # TCP fields
         device.host = config.get("host", "127.0.0.1")
         device.port = config.get("port", 502)
+
+        # RTU fields
+        device.serial_port = config.get("serial_port", "")
+        device.baud_rate = config.get("baud_rate", 9600)
+        device.parity = config.get("parity", "N")
+        device.stop_bits = config.get("stop_bits", 1)
+        device.data_bits = config.get("data_bits", 8)
+
+        # Common fields
         device.timeout_ms = config.get("timeout_ms", 1000)
         device.slave_id = config.get("slave_id", 1)
 
@@ -105,16 +136,35 @@ class ModbusDeviceConfig:
     def validate(self) -> None:
         """Validates the device configuration."""
         if self.name == "UNDEFINED":
-            raise ValueError(f"Device name is undefined for device {self.host}:{self.port}.")
+            raise ValueError(f"Device name is undefined.")
         if self.protocol != "MODBUS":
             raise ValueError(f"Invalid protocol: {self.protocol}. Expected 'MODBUS' for device {self.name}.")
-        if not isinstance(self.port, int) or self.port <= 0:
-            raise ValueError(f"Invalid port: {self.port}. Must be a positive integer for device {self.name}.")
         if not isinstance(self.timeout_ms, int) or self.timeout_ms <= 0:
             raise ValueError(f"Invalid timeout_ms: {self.timeout_ms}. Must be a positive integer for device {self.name}.")
-        if not isinstance(self.slave_id, int) or not (0 <= self.slave_id <= 255):
-            raise ValueError(f"Invalid slave_id: {self.slave_id}. Must be an integer between 0 and 255 for device {self.name}.")
 
+        # Transport-specific validation
+        if self.transport == "rtu":
+            if not self.serial_port:
+                raise ValueError(f"Serial port is required for RTU device '{self.name}'")
+            if not isinstance(self.slave_id, int) or not (1 <= self.slave_id <= 247):
+                raise ValueError(f"Slave ID must be 1-247 for RTU device '{self.name}', got {self.slave_id}")
+            if self.parity not in ("N", "E", "O"):
+                raise ValueError(f"Invalid parity '{self.parity}' for RTU device '{self.name}'. Must be 'N', 'E', or 'O'.")
+            if self.stop_bits not in (1, 2):
+                raise ValueError(f"Stop bits must be 1 or 2 for RTU device '{self.name}', got {self.stop_bits}")
+            if self.data_bits not in (7, 8):
+                raise ValueError(f"Data bits must be 7 or 8 for RTU device '{self.name}', got {self.data_bits}")
+        elif self.transport == "tcp":
+            if not self.host:
+                raise ValueError(f"Host is required for TCP device '{self.name}'")
+            if not isinstance(self.port, int) or not (1 <= self.port <= 65535):
+                raise ValueError(f"Port must be 1-65535 for TCP device '{self.name}', got {self.port}")
+            if not isinstance(self.slave_id, int) or not (0 <= self.slave_id <= 255):
+                raise ValueError(f"Slave ID must be 0-255 for TCP device '{self.name}', got {self.slave_id}")
+        else:
+            raise ValueError(f"Invalid transport type '{self.transport}' for device '{self.name}'. Must be 'tcp' or 'rtu'.")
+
+        # Validate IO points
         for i, point in enumerate(self.io_points):
             if not isinstance(point, ModbusIoPointConfig):
                 raise ValueError(f"Invalid I/O point {i}: {point}. Must be an instance of ModbusIoPointConfig for device {self.name}.")
@@ -130,7 +180,10 @@ class ModbusDeviceConfig:
                 raise ValueError(f"Invalid cycle_time_ms: {point.cycle_time_ms}. Must be a positive integer for device {self.name}, point {i}.")
 
     def __repr__(self) -> str:
-        return f"ModbusDeviceConfig(name='{self.name}', host='{self.host}', port={self.port}, slave_id={self.slave_id}, io_points={len(self.io_points)})"
+        if self.transport == "tcp":
+            return f"ModbusDeviceConfig(name='{self.name}', transport='tcp', host='{self.host}', port={self.port}, slave_id={self.slave_id}, io_points={len(self.io_points)})"
+        else:
+            return f"ModbusDeviceConfig(name='{self.name}', transport='rtu', serial_port='{self.serial_port}', baud_rate={self.baud_rate}, slave_id={self.slave_id}, io_points={len(self.io_points)})"
 
 class ModbusMasterConfig(PluginConfigContract):
     """
@@ -167,23 +220,41 @@ class ModbusMasterConfig(PluginConfigContract):
         """Validates the configuration."""
         if not self.devices:
             raise ValueError("No devices configured. At least one Modbus device must be defined.")
-        
+
         # Validate each device
         for i, device in enumerate(self.devices):
             try:
                 device.validate()
             except Exception as e:
                 raise ValueError(f"Device #{i+1} validation failed: {e}")
-        
+
         # Check for duplicate device names
         device_names = [device.name for device in self.devices]
         if len(device_names) != len(set(device_names)):
             raise ValueError("Duplicate device names found. Each device must have a unique name.")
-        
-        # Check for duplicate host:port combinations
-        host_port_combinations = [(device.host, device.port) for device in self.devices]
+
+        # Separate TCP and RTU devices for different validation rules
+        tcp_devices = [d for d in self.devices if d.transport == "tcp"]
+        rtu_devices = [d for d in self.devices if d.transport == "rtu"]
+
+        # Check for duplicate host:port combinations for TCP devices
+        host_port_combinations = [(device.host, device.port) for device in tcp_devices]
         if len(host_port_combinations) != len(set(host_port_combinations)):
-            raise ValueError("Duplicate host:port combinations found. Each device must have a unique host:port combination.")
+            raise ValueError("Duplicate host:port combinations found for TCP devices. Each TCP device must have a unique host:port combination.")
+
+        # Check for duplicate slave IDs on the same serial bus for RTU devices
+        # Group RTU devices by serial bus (serial_port + baud_rate + parity + stop_bits + data_bits)
+        rtu_buses: Dict[str, List[int]] = {}
+        for device in rtu_devices:
+            bus_key = f"{device.serial_port}:{device.baud_rate}:{device.parity}:{device.stop_bits}:{device.data_bits}"
+            if bus_key not in rtu_buses:
+                rtu_buses[bus_key] = []
+            rtu_buses[bus_key].append(device.slave_id)
+
+        # Check for duplicate slave IDs within each bus
+        for bus_key, slave_ids in rtu_buses.items():
+            if len(slave_ids) != len(set(slave_ids)):
+                raise ValueError(f"Duplicate slave IDs found on RTU bus '{bus_key}'. Each device on the same serial bus must have a unique slave ID.")
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(devices={len(self.devices)})"
