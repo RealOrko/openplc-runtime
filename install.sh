@@ -246,8 +246,8 @@ install_deps_msys2() {
     # Update package database (but don't do full system upgrade to avoid breaking frozen bundles)
     pacman -Sy --noconfirm
     # Install required packages
-    # Note: python-cryptography is installed via pacman because pip cannot build
-    # Rust-based packages on MSYS2/Cygwin.
+    # Note: python-cryptography and mingw-w64-x86_64-python-bcrypt are installed via pacman
+    # because pip cannot build Rust-based packages on MSYS2/Cygwin.
     # Plugin venvs use --system-site-packages to access these pre-built packages.
     pacman -S --noconfirm --needed \
         base-devel \
@@ -259,18 +259,9 @@ install_deps_msys2() {
         python-pip \
         python-setuptools \
         python-cryptography \
+        mingw-w64-x86_64-python-bcrypt \
         git \
         sqlite3
-
-    # Install bcrypt only on MINGW64 environment (has pre-built wheel)
-    # Plain MSYS (cygwin) cannot build bcrypt; password auth will be disabled there
-    if [[ "$(uname -s)" == MINGW64* ]]; then
-        echo "MINGW64 detected: installing pre-built bcrypt package..."
-        pacman -S --noconfirm --needed mingw-w64-x86_64-python-bcrypt
-    else
-        echo "Note: bcrypt not available on plain MSYS. OPC-UA password authentication will be disabled."
-        echo "For full functionality, use MINGW64 environment instead."
-    fi
 }
 
 compile_plc() {

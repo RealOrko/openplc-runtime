@@ -7,9 +7,7 @@ asyncua==1.1.8
 psutil==7.2.1; sys_platform != 'cygwin'
 
 # Password hashing for user authentication (required for security)
-# On plain MSYS2/Cygwin, bcrypt cannot be built due to Rust/pyo3 linking issues.
-# Password authentication will be disabled on cygwin; use MINGW64 environment for full functionality.
-bcrypt>=4.0.0; sys_platform != 'cygwin'
+bcrypt>=4.0.0
 
 # Core dependencies (automatically installed with asyncua)
 # cryptography>=3.4.8        # For OPC-UA security features
