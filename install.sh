@@ -306,19 +306,6 @@ compile_plc() {
     return 0
 }
 
-# Check if a venv has system-site-packages enabled
-venv_has_system_site_packages() {
-    local venv_path="$1"
-    local cfg_file="$venv_path/pyvenv.cfg"
-
-    if [ ! -f "$cfg_file" ]; then
-        return 1
-    fi
-
-    # Check if include-system-site-packages = true in pyvenv.cfg
-    grep -q "include-system-site-packages = true" "$cfg_file" 2>/dev/null
-}
-
 # Function to setup plugin virtual environments
 setup_plugin_venvs() {
     local plugins_dir="$OPENPLC_DIR/core/src/drivers/plugins/python"
@@ -365,25 +352,8 @@ setup_plugin_venvs() {
         if [ -d "$venv_path" ]; then
             log_info "Virtual environment already exists for $plugin_name"
 
-            # On MSYS2, check if venv needs system-site-packages (for pre-built cryptography, etc.)
-            # If not enabled, we need to recreate the venv
-            local needs_recreate=false
-            if is_msys2 && ! venv_has_system_site_packages "$venv_path"; then
-                log_warning "MSYS2: venv for $plugin_name missing system-site-packages, recreating..."
-                needs_recreate=true
-                rm -rf "$venv_path"
-            fi
-
-            if [ "$needs_recreate" = true ]; then
-                # Recreate the venv with proper flags
-                if bash "$manage_script" create "$plugin_name"; then
-                    log_success "Virtual environment recreated for $plugin_name"
-                else
-                    log_error "Failed to recreate virtual environment for $plugin_name"
-                    return 1
-                fi
             # Check if requirements.txt is newer than the venv (dependencies may have changed)
-            elif [ "$requirements_file" -nt "$venv_path" ]; then
+            if [ "$requirements_file" -nt "$venv_path" ]; then
                 log_warning "Requirements file is newer than venv for $plugin_name"
                 log_info "Updating dependencies for $plugin_name..."
 
