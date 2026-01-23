@@ -308,7 +308,6 @@ class SynchronizationManager:
                                         values_to_write.append(plc_value)
                                         indices_to_write.append(elem_index)
                                     self.opcua_value_cache[elem_index] = plc_value
-                                    log_debug(f"Array element {elem_index} changed: {plc_value}")
                         continue
 
                     # Handle scalar value
@@ -326,7 +325,6 @@ class SynchronizationManager:
 
                         # Update cache
                         self.opcua_value_cache[var_index] = plc_value
-                        log_debug(f"Variable {var_index} changed: {plc_value}")
 
                 except Exception as e:
                     log_error(f"Error reading OPC-UA variable {var_index}: {e}")
@@ -343,7 +341,6 @@ class SynchronizationManager:
                         metadata = self.variable_metadata.get(var_index)
                         if metadata:
                             write_timespec_direct(metadata.address, tv_sec, tv_nsec)
-                            log_debug(f"TIME variable {var_index} written: ({tv_sec}, {tv_nsec})")
                         else:
                             log_warn(f"No metadata for TIME variable {var_index}, skipping write")
                     except Exception as e:
