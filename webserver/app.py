@@ -130,6 +130,37 @@ def handle_ping(data: dict) -> dict:
     return {"status": response}
 
 
+def handle_list_serial_ports(data: dict) -> dict:
+    """
+    List available serial ports on the system.
+
+    Returns:
+        {
+            "ports": [
+                {"device": "/dev/ttyUSB0", "description": "USB-Serial Controller"},
+                {"device": "/dev/ttyACM0", "description": "Arduino Uno"},
+                ...
+            ]
+        }
+    """
+    try:
+        import serial.tools.list_ports
+
+        ports = serial.tools.list_ports.comports()
+        port_list = [
+            {
+                "device": port.device,
+                "description": port.description or port.device,
+            }
+            for port in ports
+        ]
+        return {"ports": port_list}
+    except ImportError:
+        return {"error": "pyserial not installed", "ports": []}
+    except Exception as e:
+        return {"error": str(e), "ports": []}
+
+
 GET_HANDLERS: dict[str, Callable[[dict], dict]] = {
     "start-plc": handle_start_plc,
     "stop-plc": handle_stop_plc,
@@ -137,6 +168,7 @@ GET_HANDLERS: dict[str, Callable[[dict], dict]] = {
     "compilation-status": handle_compilation_status,
     "status": handle_status,
     "ping": handle_ping,
+    "serial-ports": handle_list_serial_ports,
 }
 
 

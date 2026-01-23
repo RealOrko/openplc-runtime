@@ -9,3 +9,4 @@ pytest
 pytest-flask
 pre-commit
 psutil; sys_platform != "cygwin"
+pyserial>=3.5

@@ -67,16 +67,26 @@ slave_threads: List[threading.Thread] = []
 
 
 class ModbusSlaveDevice(threading.Thread):
+    """
+    Handles a single Modbus TCP device with its own connection.
+    For RTU devices, use ModbusRtuBusHandler instead.
+    """
     def __init__(self, device_config: Any, sba: SafeBufferAccess, plugin_logger: PluginLogger):
         super().__init__(daemon=True)
         self.device_config = device_config
         self.sba = sba
         self.logger = plugin_logger
         self._stop_event = threading.Event()
+
+        # Create connection manager for TCP device
         self.connection_manager = ModbusConnectionManager(
-            device_config.host, device_config.port, device_config.timeout_ms
+            transport="tcp",
+            host=device_config.host,
+            port=device_config.port,
+            timeout_ms=device_config.timeout_ms,
+            slave_id=device_config.slave_id
         )
-        self.name = f"ModbusSlave-{device_config.name}-{device_config.host}:{device_config.port}"
+        self.name = f"ModbusSlave-{device_config.name}-TCP-{device_config.host}:{device_config.port}"
 
         # Calculate GCD of all I/O point cycle times for this device
         self.gcd_cycle_time_ms = calculate_gcd_of_cycle_times(device_config.io_points)
@@ -149,22 +159,23 @@ class ModbusSlaveDevice(threading.Thread):
                             count = point.length  # 1:1 mapping for boolean operations
 
                         # Perform Modbus read based on function code
-                        # Note: pymodbus 3.x requires count as keyword argument
+                        # Note: pymodbus 3.10+ uses device_id parameter (formerly slave)
+                        # device_id is used for Modbus TCP gateways that forward to RS485 devices
                         if point.fc == 1:  # Read Coils
                             response = self.connection_manager.client.read_coils(
-                                address, count=count
+                                address, count=count, device_id=self.connection_manager.slave_id
                             )
                         elif point.fc == 2:  # Read Discrete Inputs
                             response = self.connection_manager.client.read_discrete_inputs(
-                                address, count=count
+                                address, count=count, device_id=self.connection_manager.slave_id
                             )
                         elif point.fc == 3:  # Read Holding Registers
                             response = self.connection_manager.client.read_holding_registers(
-                                address, count=count
+                                address, count=count, device_id=self.connection_manager.slave_id
                             )
                         elif point.fc == 4:  # Read Input Registers
                             response = self.connection_manager.client.read_input_registers(
-                                address, count=count
+                                address, count=count, device_id=self.connection_manager.slave_id
                             )
                         else:
                             self.logger.warn(f"[{self.name}] Unsupported read FC: {point.fc}")
@@ -327,10 +338,12 @@ class ModbusSlaveDevice(threading.Thread):
                             continue
 
                         # Perform Modbus write operation
+                        # Note: pymodbus 3.10+ uses device_id parameter (formerly slave)
+                        # device_id is used for Modbus TCP gateways that forward to RS485 devices
                         if point.fc == 5:  # Write Single Coil
                             if len(values_to_write) > 0:
                                 response = self.connection_manager.client.write_coil(
-                                    address, values_to_write[0]
+                                    address, values_to_write[0], device_id=self.connection_manager.slave_id
                                 )
                             else:
                                 self.logger.error(
@@ -341,7 +354,7 @@ class ModbusSlaveDevice(threading.Thread):
                         elif point.fc == 6:  # Write Single Register
                             if len(values_to_write) > 0:
                                 response = self.connection_manager.client.write_register(
-                                    address, values_to_write[0]
+                                    address, values_to_write[0], device_id=self.connection_manager.slave_id
                                 )
                             else:
                                 self.logger.error(
@@ -351,11 +364,11 @@ class ModbusSlaveDevice(threading.Thread):
                                 continue
                         elif point.fc == 15:  # Write Multiple Coils
                             response = self.connection_manager.client.write_coils(
-                                address, values_to_write
+                                address, values_to_write, device_id=self.connection_manager.slave_id
                             )
                         elif point.fc == 16:  # Write Multiple Registers
                             response = self.connection_manager.client.write_registers(
-                                address, values_to_write
+                                address, values_to_write, device_id=self.connection_manager.slave_id
                             )
                         else:
                             self.logger.warn(f"[{self.name}] Unsupported write FC: {point.fc}")
@@ -420,6 +433,434 @@ class ModbusSlaveDevice(threading.Thread):
         self._stop_event.set()
 
 
+class ModbusRtuBusHandler(threading.Thread):
+    """
+    Handles multiple Modbus RTU devices on a single serial port (multi-drop).
+    One thread per serial bus, managing multiple slave IDs.
+
+    This differs from ModbusSlaveDevice in that:
+    - A single serial connection is shared by multiple devices
+    - Each device has a unique slave_id
+    - IO operations include the slave_id to route to the correct device
+    """
+
+    def __init__(
+        self,
+        serial_config: dict,  # {serial_port, baud_rate, parity, stop_bits, data_bits, timeout_ms}
+        devices: List[Any],  # List of ModbusDeviceConfig on this bus
+        sba: SafeBufferAccess,
+        plugin_logger: PluginLogger,
+    ):
+        super().__init__(daemon=True)
+        self.serial_config = serial_config
+        self.devices = devices
+        self.sba = sba
+        self.logger = plugin_logger
+        self._stop_event = threading.Event()
+
+        # Create single connection for the entire bus
+        self.connection_manager = ModbusConnectionManager(
+            transport="rtu",
+            serial_port=serial_config["serial_port"],
+            baud_rate=serial_config["baud_rate"],
+            parity=serial_config["parity"],
+            stop_bits=serial_config["stop_bits"],
+            data_bits=serial_config["data_bits"],
+            timeout_ms=serial_config["timeout_ms"],
+            slave_id=1,  # Default, will use device-specific slave_id per operation
+        )
+
+        # Build consolidated IO point list with slave_id
+        # Each entry: {"point": io_point, "slave_id": device.slave_id, "device_name": device.name}
+        self.all_io_points = []
+        for device in devices:
+            for point in device.io_points:
+                self.all_io_points.append({
+                    "point": point,
+                    "slave_id": device.slave_id,
+                    "device_name": device.name,
+                })
+
+        # Calculate GCD of all IO point cycle times across all devices on this bus
+        all_cycle_times = [p.cycle_time_ms for d in devices for p in d.io_points]
+        self.gcd_cycle_time_ms = calculate_gcd_of_cycle_times(
+            [type('obj', (object,), {'cycle_time_ms': ct})() for ct in all_cycle_times]
+        ) if all_cycle_times else 1000
+
+        device_names = ", ".join([d.name for d in devices])
+        self.name = f"ModbusRtuBus-{serial_config['serial_port']}"
+        self.logger.info(
+            f"[{self.name}] RTU bus handler created for devices: {device_names} "
+            f"({len(self.all_io_points)} total IO points, GCD cycle: {self.gcd_cycle_time_ms}ms)"
+        )
+
+    def _ensure_connection(self) -> bool:
+        """Ensures there is a valid connection, reconnecting if necessary."""
+        return self.connection_manager.ensure_connection(self._stop_event)
+
+    def run(self):  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
+        self.logger.info(f"[{self.name}] Thread started for {len(self.devices)} device(s).")
+
+        gcd_cycle_time_seconds = self.gcd_cycle_time_ms / 1000.0
+
+        if not self.all_io_points:
+            self.logger.warn(f"[{self.name}] No I/O points defined. Stopping thread.")
+            return
+
+        # Connect with infinite retry
+        if not self.connection_manager.connect_with_retry(self._stop_event):
+            self.logger.info(f"[{self.name}] Thread stopped before connection could be established.")
+            return
+
+        # Initialize cycle counter
+        cycle_counter = 0
+
+        try:
+            while not self._stop_event.is_set():
+                cycle_start_time = time.monotonic()
+
+                # Ensure connection exists before cycle
+                if not self._ensure_connection():
+                    break  # Thread was interrupted
+
+                # 1. READ OPERATIONS - Process only I/O points that are due for polling this cycle
+                read_results_to_update = []  # Store tuples: (iec_addr, modbus_data, length)
+
+                for io_entry in self.all_io_points:
+                    if self._stop_event.is_set():
+                        break
+
+                    point = io_entry["point"]
+                    slave_id = io_entry["slave_id"]
+
+                    # Skip if not a read operation
+                    if point.fc not in [1, 2, 3, 4]:
+                        continue
+
+                    # Check if point should be polled this cycle
+                    point_cycle_multiple = point.cycle_time_ms // self.gcd_cycle_time_ms
+                    if (cycle_counter % point_cycle_multiple) != 0:
+                        continue
+
+                    try:
+                        # Parse Modbus offset
+                        address = parse_modbus_offset(point.offset)
+
+                        # Calculate the correct number of Modbus registers/coils needed
+                        if point.fc in [3, 4]:  # Register-based operations
+                            iec_size = point.iec_location.size
+                            registers_per_iec_element = get_modbus_registers_count_for_iec_size(
+                                iec_size
+                            )
+                            count = point.length * registers_per_iec_element
+                        else:  # Coil/Discrete Input operations
+                            count = point.length
+
+                        # Perform Modbus read with device-specific slave_id
+                        if point.fc == 1:  # Read Coils
+                            response = self.connection_manager.client.read_coils(
+                                address, count=count, device_id=slave_id
+                            )
+                        elif point.fc == 2:  # Read Discrete Inputs
+                            response = self.connection_manager.client.read_discrete_inputs(
+                                address, count=count, device_id=slave_id
+                            )
+                        elif point.fc == 3:  # Read Holding Registers
+                            response = self.connection_manager.client.read_holding_registers(
+                                address, count=count, device_id=slave_id
+                            )
+                        elif point.fc == 4:  # Read Input Registers
+                            response = self.connection_manager.client.read_input_registers(
+                                address, count=count, device_id=slave_id
+                            )
+                        else:
+                            self.logger.warn(f"[{self.name}] Unsupported read FC: {point.fc}")
+                            continue
+
+                        # Check if response is valid
+                        if isinstance(response, (ModbusIOException, ExceptionResponse)):
+                            self.logger.error(
+                                f"[{self.name}] Modbus read error "
+                                f"(slave {slave_id}, FC {point.fc}, addr {address}): {response}"
+                            )
+                            self.connection_manager.mark_disconnected()
+                            continue
+                        if response.isError():
+                            self.logger.error(
+                                f"[{self.name}] Modbus read failed "
+                                f"(slave {slave_id}, FC {point.fc}, addr {address}): {response}"
+                            )
+                            self.connection_manager.mark_disconnected()
+                            continue
+
+                        # Extract data from response
+                        if point.fc in [1, 2]:
+                            modbus_data = response.bits
+                        else:
+                            modbus_data = response.registers
+
+                        # Store for batch update
+                        read_results_to_update.append(
+                            (point.iec_location, modbus_data, point.length)
+                        )
+
+                    except ValueError as ve:
+                        self.logger.error(
+                            f"[{self.name}] Invalid offset "
+                            f"'{point.offset}' for slave {slave_id}, FC {point.fc}: {ve}"
+                        )
+                    except ConnectionException as ce:
+                        self.logger.error(
+                            f"[{self.name}] Connection error reading "
+                            f"slave {slave_id}, FC {point.fc}, offset {point.offset}: {ce}"
+                        )
+                        self.connection_manager.mark_disconnected()
+                    except Exception as e:
+                        self.logger.error(
+                            f"[{self.name}] Error reading "
+                            f"slave {slave_id}, FC {point.fc}, offset {point.offset}: {e}"
+                        )
+                        self.connection_manager.mark_disconnected()
+
+                # Batch update IEC buffers with single mutex acquisition
+                if read_results_to_update:
+                    preconverted_updates = []
+                    for iec_addr, modbus_data, length in read_results_to_update:
+                        converted_values, details = convert_modbus_data_to_iec_values(
+                            iec_addr, modbus_data, length
+                        )
+                        if converted_values is not None and details is not None:
+                            preconverted_updates.append((converted_values, details))
+                        else:
+                            self.logger.error(
+                                f"[{self.name}] Data conversion failed "
+                                f"for IEC address {iec_addr}, length={length}"
+                            )
+
+                    if preconverted_updates:
+                        lock_acquired, lock_msg = self.sba.acquire_mutex()
+                        if lock_acquired:
+                            try:
+                                for converted_values, details in preconverted_updates:
+                                    write_preconverted_iec_values(
+                                        self.sba, converted_values, details
+                                    )
+                            finally:
+                                self.sba.release_mutex()
+                        else:
+                            self.logger.error(
+                                f"[{self.name}] Failed to acquire mutex "
+                                f"for read updates: {lock_msg}"
+                            )
+
+                # 2. WRITE OPERATIONS
+                write_points_due = []
+                for io_entry in self.all_io_points:
+                    if self._stop_event.is_set():
+                        break
+
+                    point = io_entry["point"]
+                    slave_id = io_entry["slave_id"]
+
+                    if point.fc not in [5, 6, 15, 16]:  # Write functions
+                        continue
+
+                    point_cycle_multiple = point.cycle_time_ms // self.gcd_cycle_time_ms
+                    if (cycle_counter % point_cycle_multiple) != 0:
+                        continue
+
+                    try:
+                        address = parse_modbus_offset(point.offset)
+                        write_points_due.append((point, address, slave_id))
+                    except ValueError as ve:
+                        self.logger.error(
+                            f"[{self.name}] Invalid offset "
+                            f"'{point.offset}' for slave {slave_id}, FC {point.fc}: {ve}"
+                        )
+
+                # Phase 2: Read all raw IEC values under a single mutex acquisition
+                raw_iec_data = []
+                if write_points_due:
+                    lock_acquired, lock_msg = self.sba.acquire_mutex()
+                    if lock_acquired:
+                        try:
+                            for point, address, slave_id in write_points_due:
+                                raw_values, details, iec_size = read_raw_iec_values(
+                                    self.sba, point.iec_location, point.length
+                                )
+                                if raw_values is not None:
+                                    raw_iec_data.append(
+                                        (point, address, slave_id, raw_values, details, iec_size)
+                                    )
+                                else:
+                                    self.logger.error(
+                                        f"[{self.name}] Failed to read raw IEC data "
+                                        f"for write (slave {slave_id}, FC {point.fc}, offset {point.offset})"
+                                    )
+                        finally:
+                            self.sba.release_mutex()
+                    else:
+                        self.logger.error(
+                            f"[{self.name}] Failed to acquire mutex "
+                            f"for batch write prep: {lock_msg}"
+                        )
+
+                # Phase 3: Convert and perform Modbus writes
+                for point, address, slave_id, raw_values, details, iec_size in raw_iec_data:
+                    if self._stop_event.is_set():
+                        break
+
+                    try:
+                        values_to_write = convert_raw_iec_to_modbus(raw_values, details, iec_size)
+
+                        if values_to_write is None:
+                            self.logger.error(
+                                f"[{self.name}] Failed to convert data "
+                                f"for Modbus write (slave {slave_id}, FC {point.fc}, "
+                                f"offset {point.offset})"
+                            )
+                            continue
+
+                        # Perform Modbus write with device-specific slave_id
+                        if point.fc == 5:  # Write Single Coil
+                            if len(values_to_write) > 0:
+                                response = self.connection_manager.client.write_coil(
+                                    address, values_to_write[0], device_id=slave_id
+                                )
+                            else:
+                                self.logger.error(
+                                    f"[{self.name}] No data to write "
+                                    f"for slave {slave_id}, FC 5, offset {address}"
+                                )
+                                continue
+                        elif point.fc == 6:  # Write Single Register
+                            if len(values_to_write) > 0:
+                                response = self.connection_manager.client.write_register(
+                                    address, values_to_write[0], device_id=slave_id
+                                )
+                            else:
+                                self.logger.error(
+                                    f"[{self.name}] No data to write "
+                                    f"for slave {slave_id}, FC 6, offset {address}"
+                                )
+                                continue
+                        elif point.fc == 15:  # Write Multiple Coils
+                            response = self.connection_manager.client.write_coils(
+                                address, values_to_write, device_id=slave_id
+                            )
+                        elif point.fc == 16:  # Write Multiple Registers
+                            response = self.connection_manager.client.write_registers(
+                                address, values_to_write, device_id=slave_id
+                            )
+                        else:
+                            self.logger.warn(f"[{self.name}] Unsupported write FC: {point.fc}")
+                            continue
+
+                        # Check write response
+                        if isinstance(response, (ModbusIOException, ExceptionResponse)):
+                            self.logger.error(
+                                f"[{self.name}] Modbus write error "
+                                f"(slave {slave_id}, FC {point.fc}, addr {address}): {response}"
+                            )
+                            self.connection_manager.mark_disconnected()
+                        elif response.isError():
+                            self.logger.error(
+                                f"[{self.name}] Modbus write failed "
+                                f"(slave {slave_id}, FC {point.fc}, addr {address}): {response}"
+                            )
+                            self.connection_manager.mark_disconnected()
+
+                    except ConnectionException as ce:
+                        self.logger.error(
+                            f"[{self.name}] Connection error writing "
+                            f"slave {slave_id}, FC {point.fc}, offset {point.offset}: {ce}"
+                        )
+                        self.connection_manager.mark_disconnected()
+                    except Exception as e:
+                        self.logger.error(
+                            f"[{self.name}] Error writing "
+                            f"slave {slave_id}, FC {point.fc}, offset {point.offset}: {e}"
+                        )
+                        self.connection_manager.mark_disconnected()
+
+                # 3. CYCLE TIMING
+                cycle_elapsed = time.monotonic() - cycle_start_time
+                sleep_duration = max(0, gcd_cycle_time_seconds - cycle_elapsed)
+                if sleep_duration > 0:
+                    sleep_increment = 0.1
+                    remaining_sleep = sleep_duration
+
+                    while remaining_sleep > 0 and not self._stop_event.is_set():
+                        actual_sleep = min(sleep_increment, remaining_sleep)
+                        time.sleep(actual_sleep)
+                        remaining_sleep -= actual_sleep
+
+                cycle_counter += 1
+
+        except ConnectionException as ce:
+            self.logger.error(f"[{self.name}] Connection failed: {ce}")
+            self.connection_manager.mark_disconnected()
+        except Exception as e:
+            self.logger.error(f"[{self.name}] Unexpected error in thread: {e}")
+            traceback.print_exc()
+        finally:
+            self.connection_manager.disconnect()
+            self.logger.info(f"[{self.name}] Thread finished and connection closed.")
+
+    def stop(self):
+        self.logger.info(f"[{self.name}] Stop signal received.")
+        self._stop_event.set()
+
+
+def group_rtu_devices_by_bus(devices: List[Any]) -> dict:
+    """
+    Group RTU devices by serial port configuration (forming unique "buses").
+
+    Devices on the same serial port with the same settings share a connection.
+    Each bus has one thread handling all devices (different slave IDs).
+
+    Args:
+        devices: List of ModbusDeviceConfig with transport="rtu"
+
+    Returns:
+        Dictionary keyed by bus identifier:
+        {
+            "serial_port:baud_rate:parity:stop_bits:data_bits": {
+                "config": {serial_port, baud_rate, parity, stop_bits, data_bits, timeout_ms},
+                "devices": [list of devices on this bus]
+            }
+        }
+    """
+    buses = {}
+
+    for device in devices:
+        bus_key = (
+            f"{device.serial_port}:{device.baud_rate}:"
+            f"{device.parity}:{device.stop_bits}:{device.data_bits}"
+        )
+
+        if bus_key not in buses:
+            buses[bus_key] = {
+                "config": {
+                    "serial_port": device.serial_port,
+                    "baud_rate": device.baud_rate,
+                    "parity": device.parity,
+                    "stop_bits": device.stop_bits,
+                    "data_bits": device.data_bits,
+                    "timeout_ms": device.timeout_ms,
+                },
+                "devices": [],
+            }
+
+        buses[bus_key]["devices"].append(device)
+
+        # Use minimum timeout across all devices on the bus
+        if device.timeout_ms < buses[bus_key]["config"]["timeout_ms"]:
+            buses[bus_key]["config"]["timeout_ms"] = device.timeout_ms
+
+    return buses
+
+
 def init(args_capsule):
     """
     Initialize the Modbus Master plugin.
@@ -477,6 +918,9 @@ def start_loop():
     """
     Start the main loop for all configured Modbus devices.
     This function is called after successful initialization.
+
+    TCP devices: One thread per device (ModbusSlaveDevice)
+    RTU devices: One thread per serial bus (ModbusRtuBusHandler), supporting multi-drop
     """
     # pylint: disable=global-variable-not-assigned
     global slave_threads, modbus_master_config, safe_buffer_accessor, logger
@@ -489,21 +933,53 @@ def start_loop():
             logger.error("Plugin not properly initialized")
             return False
 
-        # Start a thread for each configured device
-        for device_config in modbus_master_config.devices:
+        # Separate TCP and RTU devices
+        tcp_devices = [d for d in modbus_master_config.devices if d.transport == "tcp"]
+        rtu_devices = [d for d in modbus_master_config.devices if d.transport == "rtu"]
+
+        logger.info(f"Found {len(tcp_devices)} TCP device(s) and {len(rtu_devices)} RTU device(s)")
+
+        # Start TCP devices (one thread per device - existing behavior)
+        for device_config in tcp_devices:
             try:
                 device_thread = ModbusSlaveDevice(device_config, safe_buffer_accessor, logger)
                 device_thread.start()
                 slave_threads.append(device_thread)
                 logger.info(
-                    f"Started thread for device: {device_config.name} "
-                    f"({device_config.host}:{device_config.port})"
+                    f"Started TCP thread for device: {device_config.name} "
+                    f"({device_config.host}:{device_config.port}, slave_id={device_config.slave_id})"
                 )
             except Exception as e:
-                logger.error(f"Failed to start thread for device {device_config.name}: {e}")
+                logger.error(f"Failed to start TCP thread for device {device_config.name}: {e}")
+
+        # Group RTU devices by serial port configuration
+        if rtu_devices:
+            rtu_buses = group_rtu_devices_by_bus(rtu_devices)
+            logger.info(f"RTU devices grouped into {len(rtu_buses)} serial bus(es)")
+
+            # Start RTU bus handlers (one thread per serial port)
+            for bus_key, bus_info in rtu_buses.items():
+                try:
+                    bus_thread = ModbusRtuBusHandler(
+                        serial_config=bus_info["config"],
+                        devices=bus_info["devices"],
+                        sba=safe_buffer_accessor,
+                        plugin_logger=logger,
+                    )
+                    bus_thread.start()
+                    slave_threads.append(bus_thread)
+
+                    device_names = ", ".join([d.name for d in bus_info["devices"]])
+                    slave_ids = ", ".join([str(d.slave_id) for d in bus_info["devices"]])
+                    logger.info(
+                        f"Started RTU bus thread: {bus_info['config']['serial_port']} "
+                        f"(devices: {device_names}, slave_ids: {slave_ids})"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to start RTU bus thread for {bus_key}: {e}")
 
         if slave_threads:
-            logger.info(f"Successfully started {len(slave_threads)} device thread(s)")
+            logger.info(f"Successfully started {len(slave_threads)} device/bus thread(s)")
             return True
         else:
             logger.error("No device threads started")
