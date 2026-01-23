@@ -21,12 +21,6 @@ is_msys2() {
     esac
 }
 
-# Detect if running on ARM v7 (32-bit ARM)
-# On this platform, cffi/cryptography wheels are not available and must use system packages
-is_armv7() {
-    [ "$(uname -m)" = "armv7l" ]
-}
-
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -96,14 +90,11 @@ create_plugin_venv() {
     fi
     
     # Create virtual environment
-    # On MSYS2/Cygwin and ARM v7, use --system-site-packages to access pre-built packages like
-    # cryptography that cannot be built from source on these platforms
+    # On MSYS2/Cygwin, use --system-site-packages to access pre-built packages like
+    # cryptography that cannot be built from source on Windows
     log_info "Creating Python virtual environment at: $venv_path"
     if is_msys2; then
         log_info "MSYS2 detected: using --system-site-packages for pre-built package access"
-        python3 -m venv --system-site-packages "$venv_path"
-    elif is_armv7; then
-        log_info "ARM v7 detected: using --system-site-packages for pre-built package access"
         python3 -m venv --system-site-packages "$venv_path"
     else
         python3 -m venv "$venv_path"
