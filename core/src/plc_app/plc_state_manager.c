@@ -5,6 +5,7 @@
 #include "image_tables.h"
 #include "journal_buffer.h"
 #include "plc_state_manager.h"
+#include "plcapp_manager.h"
 #include "scan_cycle_manager.h"
 #include "utils/log.h"
 #include "utils/utils.h"
@@ -205,6 +206,17 @@ int unload_plc_program(PluginManager *pm)
         plugin_mutex_take(&plugin_driver->buffer_mutex);
         image_tables_clear_null_pointers();
         plugin_mutex_give(&plugin_driver->buffer_mutex);
+
+        // Cleanup Python function blocks BEFORE unloading the shared library
+        // This terminates Python subprocesses and joins runner threads to prevent
+        // crash when dlclose() unmaps the code while threads are still running
+        void (*python_cleanup)(void);
+        *(void **)(&python_cleanup) =
+            plugin_manager_get_symbol(pm, "python_blocks_cleanup");
+        if (python_cleanup)
+        {
+            python_cleanup();
+        }
 
         // Destroy the plugin manager
         plugin_manager_destroy(pm);
