@@ -28,6 +28,7 @@
 
 #include <stddef.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 #ifdef __cplusplus
 extern "C"
@@ -79,6 +80,20 @@ extern "C"
      */
     void python_loader_set_loggers(void (*log_info_func)(const char *, ...),
                                    void (*log_error_func)(const char *, ...));
+
+    /**
+     * @brief Cleanup all Python function blocks
+     *
+     * This function must be called before unloading libplc.so to:
+     * 1. Terminate all Python subprocesses (SIGTERM, then SIGKILL)
+     * 2. Wait for all runner threads to exit
+     * 3. Unmap and unlink shared memory regions
+     * 4. Remove Python script files
+     *
+     * Failure to call this before dlclose() will cause a crash because
+     * the runner threads' code lives in the shared library.
+     */
+    void python_blocks_cleanup(void);
 
 #ifdef __cplusplus
 }

@@ -59,6 +59,93 @@ from shared import (  # noqa: E402
 )
 
 
+class OpenPLCDeviceContext(ModbusDeviceContext):
+    """
+    Custom Modbus device context that correctly handles FC5/FC6 response echo.
+
+    Per Modbus specification, FC5 (Write Single Coil) and FC6 (Write Single Register)
+    responses should echo the requested value, not the current buffer state.
+
+    pymodbus implements FC5/FC6 by calling setValues() then getValues() and using
+    the read-back value in the response. However, OpenPLC uses a journal-based write
+    system where writes are queued and applied at the next PLC scan cycle. This means
+    getValues() may return the old value before the journal write is applied.
+
+    This class caches values written via FC5/FC6 and returns them on the subsequent
+    getValues() call, ensuring the response correctly echoes the requested value.
+
+    The cache uses asyncio task ID to isolate concurrent requests, preventing race
+    conditions when multiple FC5/FC6 requests arrive simultaneously.
+    """
+
+    # Function codes that require echo response (write single operations)
+    _ECHO_FUNCTION_CODES = (5, 6)  # FC5: Write Single Coil, FC6: Write Single Register
+
+    def __init__(self, *args, **kwargs):
+        """Initialize with an empty pending writes cache."""
+        super().__init__(*args, **kwargs)
+        # Cache for FC5/FC6 echo values: (task_id, func_code, address) -> value
+        self._pending_writes = {}
+
+    def setValues(self, func_code, address, values):
+        """
+        Set values in the datastore and cache for FC5/FC6 echo response.
+
+        For FC5/FC6, the written values are cached with the current asyncio task ID
+        so that the subsequent getValues() call can return the correct echo value.
+        """
+        # Cache values for FC5/FC6 echo response
+        if func_code in self._ECHO_FUNCTION_CODES:
+            try:
+                task_id = id(asyncio.current_task())
+                for i, val in enumerate(values):
+                    cache_key = (task_id, func_code, address + i)
+                    self._pending_writes[cache_key] = val
+            except RuntimeError:
+                # No running event loop - skip caching (shouldn't happen in normal operation)
+                pass
+
+        return super().setValues(func_code, address, values)
+
+    def getValues(self, func_code, address, count=1):
+        """
+        Get values from the datastore, using cached values for FC5/FC6 echo response.
+
+        For FC5/FC6, if cached values exist for this task, they are returned and
+        removed from the cache. This ensures the response echoes the requested value
+        per Modbus specification.
+        """
+        # For FC5/FC6, return cached echo values if available
+        if func_code in self._ECHO_FUNCTION_CODES:
+            try:
+                task_id = id(asyncio.current_task())
+                results = []
+                all_cached = True
+
+                for i in range(count):
+                    cache_key = (task_id, func_code, address + i)
+                    if cache_key in self._pending_writes:
+                        results.append(self._pending_writes.pop(cache_key))
+                    else:
+                        all_cached = False
+                        break
+
+                if all_cached:
+                    return results
+
+                # If not all values were cached, clean up any partial cache entries
+                # and fall through to normal read
+                for i in range(len(results), count):
+                    cache_key = (task_id, func_code, address + i)
+                    self._pending_writes.pop(cache_key, None)
+
+            except RuntimeError:
+                # No running event loop - fall through to normal read
+                pass
+
+        return super().getValues(func_code, address, count)
+
+
 class OpenPLCCoilsDataBlock(ModbusSparseDataBlock):
     """Custom Modbus coils data block that mirrors OpenPLC bool_output using SafeBufferAccess"""
 
@@ -996,7 +1083,8 @@ def init(args_capsule):
         )
 
         # Create device context with all OpenPLC-connected data blocks
-        device = ModbusDeviceContext(
+        # Uses OpenPLCDeviceContext for correct FC5/FC6 response echo handling
+        device = OpenPLCDeviceContext(
             di=discrete_inputs_block,  # Discrete Inputs -> bool_input (%IX)
             co=coils_block,  # Coils -> bool_output (%QX) + bool_memory (%MX)
             ir=input_registers_block,  # Input Registers -> int_input (%IW)
