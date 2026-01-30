@@ -25,10 +25,11 @@ if not HAS_PSUTIL:
 
 
 class RuntimeManager:
-    def __init__(self, runtime_path, plc_socket, log_socket):
+    def __init__(self, runtime_path, plc_socket, log_socket, print_debug=False):
         self.runtime_path = runtime_path
         self.plc_socket = plc_socket
         self.log_socket = log_socket
+        self.print_debug = print_debug
         self.process = None
         self.log_server = UnixLogServer(log_socket)
         self.runtime_socket = SyncUnixClient(plc_socket)
@@ -131,7 +132,10 @@ class RuntimeManager:
             logger.info("Starting PLC runtime core...")
             self._safe_start_log_server()
             try:
-                self.process = subprocess.Popen([self.runtime_path])
+                cmd = [self.runtime_path]
+                if self.print_debug:
+                    cmd.append("--print-debug")
+                self.process = subprocess.Popen(cmd)
             except (OSError, subprocess.SubprocessError) as e:
                 logger.error("Failed to start PLC runtime process: %s", e)
                 self.process = None
@@ -170,7 +174,10 @@ class RuntimeManager:
 
                 self._safe_start_log_server()
                 try:
-                    self.process = subprocess.Popen([self.runtime_path])
+                    cmd = [self.runtime_path]
+                    if self.print_debug:
+                        cmd.append("--print-debug")
+                    self.process = subprocess.Popen(cmd)
                 except (OSError, subprocess.SubprocessError) as e:
                     logger.error("Failed to start PLC runtime process: %s", e)
                     self.process = None

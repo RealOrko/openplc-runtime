@@ -1,3 +1,13 @@
+import sys
+
+# Parse --print-debug argument before any logger imports
+# This must happen first so LoggerConfig.print_debug is set before loggers are created
+_print_debug = "--print-debug" in sys.argv
+
+from webserver.logger.config import LoggerConfig
+
+LoggerConfig.print_debug = _print_debug
+
 import errno
 import json
 import os
@@ -43,6 +53,7 @@ runtime_manager = RuntimeManager(
     runtime_path="./build/plc_main",
     plc_socket="/run/runtime/plc_runtime.socket",
     log_socket="/run/runtime/log_runtime.socket",
+    print_debug=_print_debug,
 )
 
 runtime_manager.start()
