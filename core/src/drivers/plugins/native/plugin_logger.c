@@ -4,12 +4,23 @@
  */
 
 #include "plugin_logger.h"
-#include "../../../plc_app/utils/log.h"
 #include "../../plugin_types.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
 #include <time.h>
+
+/* Helper macro for formatted stderr output matching human-readable log format */
+#define PLUGIN_LOGGER_STDERR(level, fmt, ...)                                                      \
+    do                                                                                             \
+    {                                                                                              \
+        time_t now = time(NULL);                                                                   \
+        struct tm t;                                                                               \
+        gmtime_r(&now, &t);                                                                        \
+        char time_buf[20];                                                                         \
+        strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", &t);                             \
+        fprintf(stderr, "[%s] [%s] " fmt "\n", time_buf, level, ##__VA_ARGS__);                    \
+    } while (0)
 
 /* Maximum size for formatted log messages */
 #define MAX_LOG_MESSAGE_SIZE 1024
@@ -31,7 +42,7 @@ bool plugin_logger_init(plugin_logger_t *logger, const char *plugin_name, void *
 
     if (!plugin_name)
     {
-        log_error("Plugin logger init failed: plugin_name is NULL");
+        PLUGIN_LOGGER_STDERR("ERROR", "Plugin logger init failed: plugin_name is NULL");
         return false;
     }
 
@@ -41,8 +52,8 @@ bool plugin_logger_init(plugin_logger_t *logger, const char *plugin_name, void *
 
     if (!runtime_args)
     {
-        log_warn("[%s] runtime_args is NULL, logging will fall back to printf",
-                 logger->plugin_name);
+        PLUGIN_LOGGER_STDERR("WARN", "[%s] runtime_args is NULL, logging will fall back to printf",
+                             logger->plugin_name);
         return true; /* Still return true - logger will fall back to printf */
     }
 
@@ -61,8 +72,8 @@ bool plugin_logger_init(plugin_logger_t *logger, const char *plugin_name, void *
     }
     else
     {
-        log_warn("[%s] Some log functions are NULL, falling back to printf",
-                 logger->plugin_name);
+        PLUGIN_LOGGER_STDERR("WARN", "[%s] Some log functions are NULL, falling back to printf",
+                             logger->plugin_name);
     }
 
     return true;
