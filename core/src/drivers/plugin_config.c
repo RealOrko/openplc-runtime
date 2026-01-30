@@ -1,4 +1,5 @@
 #include "plugin_config.h"
+#include "../plc_app/utils/log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -72,7 +73,7 @@ int parse_plugin_config(const char *config_file, plugin_config_t *configs, int m
         token = strtok(NULL, ",");
         if (token && strlen(token) > 0)
         {
-            printf("[PLUGIN_CONFIG]: Found config_path: '%s'\n", token);
+            log_debug("Found config_path: '%s'", token);
             strncpy(configs[config_count].plugin_related_config_path, token,
                     sizeof(configs[config_count].plugin_related_config_path) - 1);
             configs[config_count]
@@ -82,7 +83,7 @@ int parse_plugin_config(const char *config_file, plugin_config_t *configs, int m
         }
         else
         {
-            printf("[PLUGIN_CONFIG]: No config_path found, using empty string\n");
+            log_debug("No config_path found, using empty string");
             // No config path specified, use empty string
             configs[config_count].plugin_related_config_path[0] = '\0';
         }

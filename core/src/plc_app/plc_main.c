@@ -65,7 +65,12 @@ int main(int argc, char *argv[])
 
     if (log_init(LOG_SOCKET_PATH) < 0)
     {
-        fprintf(stderr, "Failed to initialize logging system\n");
+        time_t now = time(NULL);
+        struct tm t;
+        gmtime_r(&now, &t);
+        char time_buf[20];
+        strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", &t);
+        fprintf(stderr, "[%s] [ERROR] Failed to initialize logging system\n", time_buf);
         return -1;
     }
 
