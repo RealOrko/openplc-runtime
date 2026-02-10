@@ -118,7 +118,7 @@ secao 3.
 O formato JSON e **identico** ao definido no plano SOEM. Ver secao 3 do documento
 `docs/ethercat-plugin-development-plan.md` para a especificacao completa.
 
-Resumo da estrutura:
+Resumo da estrutura (lista flat de slaves, alinhada com `ec_slave[]` da SOEM):
 ```json
 [
   {
@@ -127,30 +127,32 @@ Resumo da estrutura:
     "config": {
       "master": {
         "interface": "eth0",
-        "cycle_time_ms": 4,
+        "cycle_time_us": 1000,
         "watchdog_timeout_cycles": 3,
         "log_level": "info"
       },
-      "topology": [
+      "slaves": [
         {
           "position": 1,
           "name": "EK1100",
           "type": "coupler",
           "vendor_id": "0x00000002",
           "product_code": "0x044c2c52",
-          "modules": [
-            {
-              "position": 2,
-              "name": "EL1008",
-              "type": "digital_input",
-              "vendor_id": "0x00000002",
-              "product_code": "0x03f03052",
-              "channels": [ ... ],
-              "sdo_configurations": [ ... ],
-              "rx_pdos": [ ... ],
-              "tx_pdos": [ ... ]
-            }
-          ]
+          "channels": [],
+          "sdo_configurations": [],
+          "rx_pdos": [],
+          "tx_pdos": []
+        },
+        {
+          "position": 2,
+          "name": "EL1008",
+          "type": "digital_input",
+          "vendor_id": "0x00000002",
+          "product_code": "0x03f03052",
+          "channels": [ ... ],
+          "sdo_configurations": [ ... ],
+          "rx_pdos": [ ... ],
+          "tx_pdos": [ ... ]
         }
       ],
       "diagnostics": { ... }
@@ -250,7 +252,7 @@ class Channel:
 
 
 @dataclass
-class Module:
+class Slave:
     position: int
     name: str
     type: str
@@ -264,19 +266,9 @@ class Module:
 
 
 @dataclass
-class Coupler:
-    position: int
-    name: str
-    vendor_id: str
-    product_code: str
-    revision: str = ""
-    modules: List[Module] = field(default_factory=list)
-
-
-@dataclass
 class MasterConfig:
     interface: str
-    cycle_time_ms: int = 4
+    cycle_time_us: int = 1000
     watchdog_timeout_cycles: int = 3
     log_level: str = "info"
 
@@ -293,7 +285,7 @@ class DiagnosticsConfig:
 @dataclass
 class EtherCATConfig:
     master: MasterConfig
-    topology: List[Coupler]
+    slaves: List[Slave]
     diagnostics: DiagnosticsConfig
 
 
@@ -308,56 +300,47 @@ def load_config(config_path: str) -> EtherCATConfig:
 
     master = MasterConfig(
         interface=ecat["master"]["interface"],
-        cycle_time_ms=ecat["master"].get("cycle_time_ms", 4),
+        cycle_time_us=ecat["master"].get("cycle_time_us", 1000),
         watchdog_timeout_cycles=ecat["master"].get("watchdog_timeout_cycles", 3),
         log_level=ecat["master"].get("log_level", "info"),
     )
 
-    topology = []
-    for coupler_data in ecat.get("topology", []):
-        modules = []
-        for mod_data in coupler_data.get("modules", []):
-            channels = [
-                Channel(**ch) for ch in mod_data.get("channels", [])
-            ]
-            sdos = [
-                SdoConfig(**sdo) for sdo in mod_data.get("sdo_configurations", [])
-            ]
-            rx_pdos = [
-                Pdo(
-                    index=p["index"],
-                    name=p.get("name", ""),
-                    entries=[PdoEntry(**e) for e in p.get("entries", [])],
-                )
-                for p in mod_data.get("rx_pdos", [])
-            ]
-            tx_pdos = [
-                Pdo(
-                    index=p["index"],
-                    name=p.get("name", ""),
-                    entries=[PdoEntry(**e) for e in p.get("entries", [])],
-                )
-                for p in mod_data.get("tx_pdos", [])
-            ]
-            modules.append(Module(
-                position=mod_data["position"],
-                name=mod_data["name"],
-                type=mod_data["type"],
-                vendor_id=mod_data["vendor_id"],
-                product_code=mod_data["product_code"],
-                revision=mod_data.get("revision", ""),
-                channels=channels,
-                sdo_configurations=sdos,
-                rx_pdos=rx_pdos,
-                tx_pdos=tx_pdos,
-            ))
-        topology.append(Coupler(
-            position=coupler_data["position"],
-            name=coupler_data["name"],
-            vendor_id=coupler_data["vendor_id"],
-            product_code=coupler_data["product_code"],
-            revision=coupler_data.get("revision", ""),
-            modules=modules,
+    # Lista flat de slaves (alinhada com ec_slave[] da SOEM)
+    slaves = []
+    for slave_data in ecat.get("slaves", []):
+        channels = [
+            Channel(**ch) for ch in slave_data.get("channels", [])
+        ]
+        sdos = [
+            SdoConfig(**sdo) for sdo in slave_data.get("sdo_configurations", [])
+        ]
+        rx_pdos = [
+            Pdo(
+                index=p["index"],
+                name=p.get("name", ""),
+                entries=[PdoEntry(**e) for e in p.get("entries", [])],
+            )
+            for p in slave_data.get("rx_pdos", [])
+        ]
+        tx_pdos = [
+            Pdo(
+                index=p["index"],
+                name=p.get("name", ""),
+                entries=[PdoEntry(**e) for e in p.get("entries", [])],
+            )
+            for p in slave_data.get("tx_pdos", [])
+        ]
+        slaves.append(Slave(
+            position=slave_data["position"],
+            name=slave_data["name"],
+            type=slave_data["type"],
+            vendor_id=slave_data["vendor_id"],
+            product_code=slave_data["product_code"],
+            revision=slave_data.get("revision", ""),
+            channels=channels,
+            sdo_configurations=sdos,
+            rx_pdos=rx_pdos,
+            tx_pdos=tx_pdos,
         ))
 
     diag_data = ecat.get("diagnostics", {})
@@ -371,7 +354,7 @@ def load_config(config_path: str) -> EtherCATConfig:
 
     return EtherCATConfig(
         master=master,
-        topology=topology,
+        slaves=slaves,
         diagnostics=diagnostics,
     )
 ```
@@ -454,8 +437,8 @@ def init(args_capsule) -> bool:
         _config = load_config(config_path)
         _logger.info(
             f"Loaded config: interface={_config.master.interface}, "
-            f"cycle_time={_config.master.cycle_time_ms}ms, "
-            f"couplers={len(_config.topology)}"
+            f"cycle_time={_config.master.cycle_time_us}us, "
+            f"slaves={len(_config.slaves)}"
         )
     except Exception as e:
         _logger.error(f"Failed to load config: {e}")
@@ -558,7 +541,7 @@ def cleanup():
 
 **Tarefas:**
 1. Criar classe wrapper para ebpfcat.Master
-2. Implementar scan de rede e validacao de topologia contra JSON
+2. Implementar scan de rede e validacao de slaves contra JSON
 3. Implementar inicializacao de slaves
 4. Gerenciar ciclo de comunicacao
 
@@ -570,17 +553,17 @@ def cleanup():
 initialize():
   1. Criar ebpfcat.Master na interface do JSON
   2. Scan da rede
-  3. Validar topologia: slaves fisicos == JSON config
-     - Comparar vendor_id, product_code de cada slave
+  3. Validar slaves: slaves fisicos == lista slaves no JSON
+     - Comparar vendor_id, product_code de cada slave por position
      - Se divergir -> logar erro e retornar False
-  4. Aplicar SDOs conforme sdo_configurations do JSON
+  4. Aplicar SDOs conforme sdo_configurations de cada slave no JSON
   5. Configurar PDO mapping conforme JSON
   6. Transicionar slaves para OP
 ```
 
 **Criterio de Aceite:**
 - Master inicializa com ebpfcat
-- Topologia validada contra JSON
+- Slaves validados contra JSON
 - Scan detecta slaves
 - Ciclo executa sem erros
 
@@ -609,7 +592,7 @@ initialize():
 **Tarefas:**
 1. Implementar leitura de SDO
 2. Implementar escrita de SDO
-3. Iterar sobre sdo_configurations de cada modulo no JSON
+3. Iterar sobre sdo_configurations de cada slave no JSON
 4. Aplicar configuracoes no startup (Pre-Op)
 
 **Arquivos:**

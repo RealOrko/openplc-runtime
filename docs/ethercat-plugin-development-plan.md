@@ -185,6 +185,10 @@ faz discovery nem parsing ESI - tudo ja vem resolvido no JSON.
 
 ### 3.1 Estrutura Completa do JSON
 
+A lista `slaves` e **flat** (plana), exatamente como o array `ec_slave[]` da SOEM.
+Cada slave ocupa uma posicao no barramento, independente de ser coupler ou modulo.
+O campo `position` corresponde diretamente ao indice `ec_slave[position]` da SOEM.
+
 ```json
 [
   {
@@ -197,7 +201,7 @@ faz discovery nem parsing ESI - tudo ja vem resolvido no JSON.
         "watchdog_timeout_cycles": 3,
         "log_level": "info"
       },
-      "topology": [
+      "slaves": [
         {
           "position": 1,
           "name": "EK1100",
@@ -205,356 +209,358 @@ faz discovery nem parsing ESI - tudo ja vem resolvido no JSON.
           "vendor_id": "0x00000002",
           "product_code": "0x044c2c52",
           "revision": "0x00120000",
-          "modules": [
+          "channels": [],
+          "sdo_configurations": [],
+          "rx_pdos": [],
+          "tx_pdos": []
+        },
+        {
+          "position": 2,
+          "name": "EL1008",
+          "type": "digital_input",
+          "vendor_id": "0x00000002",
+          "product_code": "0x03f03052",
+          "revision": "0x00120000",
+          "channels": [
             {
-              "position": 2,
-              "name": "EL1008",
+              "index": 0,
+              "name": "Input 1",
               "type": "digital_input",
-              "vendor_id": "0x00000002",
-              "product_code": "0x03f03052",
-              "revision": "0x00120000",
-              "channels": [
+              "bit_length": 1,
+              "iec_location": "%IX0.0",
+              "pdo_index": "0x1A00",
+              "pdo_entry_index": "0x6000",
+              "pdo_entry_subindex": 1
+            },
+            {
+              "index": 1,
+              "name": "Input 2",
+              "type": "digital_input",
+              "bit_length": 1,
+              "iec_location": "%IX0.1",
+              "pdo_index": "0x1A00",
+              "pdo_entry_index": "0x6000",
+              "pdo_entry_subindex": 2
+            },
+            {
+              "index": 2,
+              "name": "Input 3",
+              "type": "digital_input",
+              "bit_length": 1,
+              "iec_location": "%IX0.2",
+              "pdo_index": "0x1A00",
+              "pdo_entry_index": "0x6000",
+              "pdo_entry_subindex": 3
+            },
+            {
+              "index": 3,
+              "name": "Input 4",
+              "type": "digital_input",
+              "bit_length": 1,
+              "iec_location": "%IX0.3",
+              "pdo_index": "0x1A00",
+              "pdo_entry_index": "0x6000",
+              "pdo_entry_subindex": 4
+            },
+            {
+              "index": 4,
+              "name": "Input 5",
+              "type": "digital_input",
+              "bit_length": 1,
+              "iec_location": "%IX0.4",
+              "pdo_index": "0x1A00",
+              "pdo_entry_index": "0x6000",
+              "pdo_entry_subindex": 5
+            },
+            {
+              "index": 5,
+              "name": "Input 6",
+              "type": "digital_input",
+              "bit_length": 1,
+              "iec_location": "%IX0.5",
+              "pdo_index": "0x1A00",
+              "pdo_entry_index": "0x6000",
+              "pdo_entry_subindex": 6
+            },
+            {
+              "index": 6,
+              "name": "Input 7",
+              "type": "digital_input",
+              "bit_length": 1,
+              "iec_location": "%IX0.6",
+              "pdo_index": "0x1A00",
+              "pdo_entry_index": "0x6000",
+              "pdo_entry_subindex": 7
+            },
+            {
+              "index": 7,
+              "name": "Input 8",
+              "type": "digital_input",
+              "bit_length": 1,
+              "iec_location": "%IX1.0",
+              "pdo_index": "0x1A00",
+              "pdo_entry_index": "0x6000",
+              "pdo_entry_subindex": 8
+            }
+          ],
+          "sdo_configurations": [],
+          "rx_pdos": [],
+          "tx_pdos": [
+            {
+              "index": "0x1A00",
+              "name": "TxPDO-Map Inputs",
+              "entries": [
                 {
-                  "index": 0,
+                  "index": "0x6000",
+                  "subindex": 1,
+                  "bit_length": 1,
                   "name": "Input 1",
-                  "type": "digital_input",
-                  "bit_length": 1,
-                  "iec_location": "%IX0.0",
-                  "pdo_index": "0x1A00",
-                  "pdo_entry_index": "0x6000",
-                  "pdo_entry_subindex": 1
+                  "data_type": "BOOL"
                 },
                 {
-                  "index": 1,
+                  "index": "0x6000",
+                  "subindex": 2,
+                  "bit_length": 1,
                   "name": "Input 2",
-                  "type": "digital_input",
-                  "bit_length": 1,
-                  "iec_location": "%IX0.1",
-                  "pdo_index": "0x1A00",
-                  "pdo_entry_index": "0x6000",
-                  "pdo_entry_subindex": 2
+                  "data_type": "BOOL"
                 },
                 {
-                  "index": 2,
+                  "index": "0x6000",
+                  "subindex": 3,
+                  "bit_length": 1,
                   "name": "Input 3",
-                  "type": "digital_input",
-                  "bit_length": 1,
-                  "iec_location": "%IX0.2",
-                  "pdo_index": "0x1A00",
-                  "pdo_entry_index": "0x6000",
-                  "pdo_entry_subindex": 3
+                  "data_type": "BOOL"
                 },
                 {
-                  "index": 3,
+                  "index": "0x6000",
+                  "subindex": 4,
+                  "bit_length": 1,
                   "name": "Input 4",
-                  "type": "digital_input",
-                  "bit_length": 1,
-                  "iec_location": "%IX0.3",
-                  "pdo_index": "0x1A00",
-                  "pdo_entry_index": "0x6000",
-                  "pdo_entry_subindex": 4
+                  "data_type": "BOOL"
                 },
                 {
-                  "index": 4,
+                  "index": "0x6000",
+                  "subindex": 5,
+                  "bit_length": 1,
                   "name": "Input 5",
-                  "type": "digital_input",
-                  "bit_length": 1,
-                  "iec_location": "%IX0.4",
-                  "pdo_index": "0x1A00",
-                  "pdo_entry_index": "0x6000",
-                  "pdo_entry_subindex": 5
+                  "data_type": "BOOL"
                 },
                 {
-                  "index": 5,
+                  "index": "0x6000",
+                  "subindex": 6,
+                  "bit_length": 1,
                   "name": "Input 6",
-                  "type": "digital_input",
-                  "bit_length": 1,
-                  "iec_location": "%IX0.5",
-                  "pdo_index": "0x1A00",
-                  "pdo_entry_index": "0x6000",
-                  "pdo_entry_subindex": 6
+                  "data_type": "BOOL"
                 },
                 {
-                  "index": 6,
+                  "index": "0x6000",
+                  "subindex": 7,
+                  "bit_length": 1,
                   "name": "Input 7",
-                  "type": "digital_input",
-                  "bit_length": 1,
-                  "iec_location": "%IX0.6",
-                  "pdo_index": "0x1A00",
-                  "pdo_entry_index": "0x6000",
-                  "pdo_entry_subindex": 7
+                  "data_type": "BOOL"
                 },
                 {
-                  "index": 7,
-                  "name": "Input 8",
-                  "type": "digital_input",
+                  "index": "0x6000",
+                  "subindex": 8,
                   "bit_length": 1,
-                  "iec_location": "%IX1.0",
-                  "pdo_index": "0x1A00",
-                  "pdo_entry_index": "0x6000",
-                  "pdo_entry_subindex": 8
+                  "name": "Input 8",
+                  "data_type": "BOOL"
                 }
-              ],
-              "sdo_configurations": [],
-              "rx_pdos": [],
-              "tx_pdos": [
+              ]
+            }
+          ]
+        },
+        {
+          "position": 3,
+          "name": "EL2008",
+          "type": "digital_output",
+          "vendor_id": "0x00000002",
+          "product_code": "0x07d83052",
+          "revision": "0x00120000",
+          "channels": [
+            {
+              "index": 0,
+              "name": "Output 1",
+              "type": "digital_output",
+              "bit_length": 1,
+              "iec_location": "%QX0.0",
+              "pdo_index": "0x1600",
+              "pdo_entry_index": "0x7000",
+              "pdo_entry_subindex": 1
+            },
+            {
+              "index": 1,
+              "name": "Output 2",
+              "type": "digital_output",
+              "bit_length": 1,
+              "iec_location": "%QX0.1",
+              "pdo_index": "0x1600",
+              "pdo_entry_index": "0x7000",
+              "pdo_entry_subindex": 2
+            }
+          ],
+          "sdo_configurations": [],
+          "rx_pdos": [
+            {
+              "index": "0x1600",
+              "name": "RxPDO-Map Outputs",
+              "entries": [
                 {
-                  "index": "0x1A00",
-                  "name": "TxPDO-Map Inputs",
-                  "entries": [
-                    {
-                      "index": "0x6000",
-                      "subindex": 1,
-                      "bit_length": 1,
-                      "name": "Input 1",
-                      "data_type": "BOOL"
-                    },
-                    {
-                      "index": "0x6000",
-                      "subindex": 2,
-                      "bit_length": 1,
-                      "name": "Input 2",
-                      "data_type": "BOOL"
-                    },
-                    {
-                      "index": "0x6000",
-                      "subindex": 3,
-                      "bit_length": 1,
-                      "name": "Input 3",
-                      "data_type": "BOOL"
-                    },
-                    {
-                      "index": "0x6000",
-                      "subindex": 4,
-                      "bit_length": 1,
-                      "name": "Input 4",
-                      "data_type": "BOOL"
-                    },
-                    {
-                      "index": "0x6000",
-                      "subindex": 5,
-                      "bit_length": 1,
-                      "name": "Input 5",
-                      "data_type": "BOOL"
-                    },
-                    {
-                      "index": "0x6000",
-                      "subindex": 6,
-                      "bit_length": 1,
-                      "name": "Input 6",
-                      "data_type": "BOOL"
-                    },
-                    {
-                      "index": "0x6000",
-                      "subindex": 7,
-                      "bit_length": 1,
-                      "name": "Input 7",
-                      "data_type": "BOOL"
-                    },
-                    {
-                      "index": "0x6000",
-                      "subindex": 8,
-                      "bit_length": 1,
-                      "name": "Input 8",
-                      "data_type": "BOOL"
-                    }
-                  ]
+                  "index": "0x7000",
+                  "subindex": 1,
+                  "bit_length": 1,
+                  "name": "Output 1",
+                  "data_type": "BOOL"
+                },
+                {
+                  "index": "0x7000",
+                  "subindex": 2,
+                  "bit_length": 1,
+                  "name": "Output 2",
+                  "data_type": "BOOL"
+                }
+              ]
+            }
+          ],
+          "tx_pdos": []
+        },
+        {
+          "position": 4,
+          "name": "EL3062",
+          "type": "analog_input",
+          "vendor_id": "0x00000002",
+          "product_code": "0x0bf63052",
+          "revision": "0x00120000",
+          "channels": [
+            {
+              "index": 0,
+              "name": "Analog Input 1",
+              "type": "analog_input",
+              "bit_length": 16,
+              "iec_location": "%IW0",
+              "pdo_index": "0x1A00",
+              "pdo_entry_index": "0x6000",
+              "pdo_entry_subindex": 17
+            },
+            {
+              "index": 1,
+              "name": "Analog Input 2",
+              "type": "analog_input",
+              "bit_length": 16,
+              "iec_location": "%IW1",
+              "pdo_index": "0x1A01",
+              "pdo_entry_index": "0x6010",
+              "pdo_entry_subindex": 17
+            }
+          ],
+          "sdo_configurations": [
+            {
+              "index": "0x8000",
+              "subindex": 6,
+              "value": 0,
+              "data_type": "UINT16",
+              "name": "Filter setting Ch.1",
+              "description": "Filter constant for channel 1 (0=50Hz, 1=60Hz)"
+            },
+            {
+              "index": "0x8000",
+              "subindex": 21,
+              "value": true,
+              "data_type": "BOOL",
+              "name": "Enable user scale Ch.1",
+              "description": "Enable user-defined scaling for channel 1"
+            },
+            {
+              "index": "0x8000",
+              "subindex": 17,
+              "value": 0,
+              "data_type": "INT16",
+              "name": "User scale offset Ch.1",
+              "description": "User-defined offset for channel 1"
+            },
+            {
+              "index": "0x8000",
+              "subindex": 18,
+              "value": 32767,
+              "data_type": "INT32",
+              "name": "User scale gain Ch.1",
+              "description": "User-defined gain for channel 1"
+            }
+          ],
+          "rx_pdos": [],
+          "tx_pdos": [
+            {
+              "index": "0x1A00",
+              "name": "TxPDO-Map Ch.1",
+              "entries": [
+                {
+                  "index": "0x6000",
+                  "subindex": 1,
+                  "bit_length": 1,
+                  "name": "Underrange",
+                  "data_type": "BOOL"
+                },
+                {
+                  "index": "0x6000",
+                  "subindex": 2,
+                  "bit_length": 1,
+                  "name": "Overrange",
+                  "data_type": "BOOL"
+                },
+                {
+                  "index": "0x0000",
+                  "subindex": 0,
+                  "bit_length": 4,
+                  "name": "padding",
+                  "data_type": "PAD"
+                },
+                {
+                  "index": "0x6000",
+                  "subindex": 7,
+                  "bit_length": 1,
+                  "name": "Error",
+                  "data_type": "BOOL"
+                },
+                {
+                  "index": "0x0000",
+                  "subindex": 0,
+                  "bit_length": 7,
+                  "name": "padding",
+                  "data_type": "PAD"
+                },
+                {
+                  "index": "0x1800",
+                  "subindex": 7,
+                  "bit_length": 1,
+                  "name": "TxPDO State",
+                  "data_type": "BOOL"
+                },
+                {
+                  "index": "0x1800",
+                  "subindex": 9,
+                  "bit_length": 1,
+                  "name": "TxPDO Toggle",
+                  "data_type": "BOOL"
+                },
+                {
+                  "index": "0x6000",
+                  "subindex": 17,
+                  "bit_length": 16,
+                  "name": "Value",
+                  "data_type": "INT16"
                 }
               ]
             },
             {
-              "position": 3,
-              "name": "EL2008",
-              "type": "digital_output",
-              "vendor_id": "0x00000002",
-              "product_code": "0x07d83052",
-              "revision": "0x00120000",
-              "channels": [
+              "index": "0x1A01",
+              "name": "TxPDO-Map Ch.2",
+              "entries": [
                 {
-                  "index": 0,
-                  "name": "Output 1",
-                  "type": "digital_output",
-                  "bit_length": 1,
-                  "iec_location": "%QX0.0",
-                  "pdo_index": "0x1600",
-                  "pdo_entry_index": "0x7000",
-                  "pdo_entry_subindex": 1
-                },
-                {
-                  "index": 1,
-                  "name": "Output 2",
-                  "type": "digital_output",
-                  "bit_length": 1,
-                  "iec_location": "%QX0.1",
-                  "pdo_index": "0x1600",
-                  "pdo_entry_index": "0x7000",
-                  "pdo_entry_subindex": 2
-                }
-              ],
-              "sdo_configurations": [],
-              "rx_pdos": [
-                {
-                  "index": "0x1600",
-                  "name": "RxPDO-Map Outputs",
-                  "entries": [
-                    {
-                      "index": "0x7000",
-                      "subindex": 1,
-                      "bit_length": 1,
-                      "name": "Output 1",
-                      "data_type": "BOOL"
-                    },
-                    {
-                      "index": "0x7000",
-                      "subindex": 2,
-                      "bit_length": 1,
-                      "name": "Output 2",
-                      "data_type": "BOOL"
-                    }
-                  ]
-                }
-              ],
-              "tx_pdos": []
-            },
-            {
-              "position": 4,
-              "name": "EL3062",
-              "type": "analog_input",
-              "vendor_id": "0x00000002",
-              "product_code": "0x0bf63052",
-              "revision": "0x00120000",
-              "channels": [
-                {
-                  "index": 0,
-                  "name": "Analog Input 1",
-                  "type": "analog_input",
-                  "bit_length": 16,
-                  "iec_location": "%IW0",
-                  "pdo_index": "0x1A00",
-                  "pdo_entry_index": "0x6000",
-                  "pdo_entry_subindex": 17
-                },
-                {
-                  "index": 1,
-                  "name": "Analog Input 2",
-                  "type": "analog_input",
-                  "bit_length": 16,
-                  "iec_location": "%IW1",
-                  "pdo_index": "0x1A01",
-                  "pdo_entry_index": "0x6010",
-                  "pdo_entry_subindex": 17
-                }
-              ],
-              "sdo_configurations": [
-                {
-                  "index": "0x8000",
-                  "subindex": 6,
-                  "value": 0,
-                  "data_type": "UINT16",
-                  "name": "Filter setting Ch.1",
-                  "description": "Filter constant for channel 1 (0=50Hz, 1=60Hz)"
-                },
-                {
-                  "index": "0x8000",
-                  "subindex": 21,
-                  "value": true,
-                  "data_type": "BOOL",
-                  "name": "Enable user scale Ch.1",
-                  "description": "Enable user-defined scaling for channel 1"
-                },
-                {
-                  "index": "0x8000",
+                  "index": "0x6010",
                   "subindex": 17,
-                  "value": 0,
-                  "data_type": "INT16",
-                  "name": "User scale offset Ch.1",
-                  "description": "User-defined offset for channel 1"
-                },
-                {
-                  "index": "0x8000",
-                  "subindex": 18,
-                  "value": 32767,
-                  "data_type": "INT32",
-                  "name": "User scale gain Ch.1",
-                  "description": "User-defined gain for channel 1"
-                }
-              ],
-              "rx_pdos": [],
-              "tx_pdos": [
-                {
-                  "index": "0x1A00",
-                  "name": "TxPDO-Map Ch.1",
-                  "entries": [
-                    {
-                      "index": "0x6000",
-                      "subindex": 1,
-                      "bit_length": 1,
-                      "name": "Underrange",
-                      "data_type": "BOOL"
-                    },
-                    {
-                      "index": "0x6000",
-                      "subindex": 2,
-                      "bit_length": 1,
-                      "name": "Overrange",
-                      "data_type": "BOOL"
-                    },
-                    {
-                      "index": "0x0000",
-                      "subindex": 0,
-                      "bit_length": 4,
-                      "name": "padding",
-                      "data_type": "PAD"
-                    },
-                    {
-                      "index": "0x6000",
-                      "subindex": 7,
-                      "bit_length": 1,
-                      "name": "Error",
-                      "data_type": "BOOL"
-                    },
-                    {
-                      "index": "0x0000",
-                      "subindex": 0,
-                      "bit_length": 7,
-                      "name": "padding",
-                      "data_type": "PAD"
-                    },
-                    {
-                      "index": "0x1800",
-                      "subindex": 7,
-                      "bit_length": 1,
-                      "name": "TxPDO State",
-                      "data_type": "BOOL"
-                    },
-                    {
-                      "index": "0x1800",
-                      "subindex": 9,
-                      "bit_length": 1,
-                      "name": "TxPDO Toggle",
-                      "data_type": "BOOL"
-                    },
-                    {
-                      "index": "0x6000",
-                      "subindex": 17,
-                      "bit_length": 16,
-                      "name": "Value",
-                      "data_type": "INT16"
-                    }
-                  ]
-                },
-                {
-                  "index": "0x1A01",
-                  "name": "TxPDO-Map Ch.2",
-                  "entries": [
-                    {
-                      "index": "0x6010",
-                      "subindex": 17,
-                      "bit_length": 16,
-                      "name": "Value",
-                      "data_type": "INT16"
-                    }
-                  ]
+                  "bit_length": 16,
+                  "name": "Value",
+                  "data_type": "INT16"
                 }
               ]
             }
@@ -588,38 +594,27 @@ faz discovery nem parsing ESI - tudo ja vem resolvido no JSON.
 | Campo | Tipo | Obrigatorio | Default | Descricao |
 |-------|------|-------------|---------|-----------|
 | `interface` | string | Sim | - | Interface de rede (ex: "eth0", "enp2s0") |
-| `cycle_time_ms` | int | Nao | 4 | Tempo de ciclo em milissegundos (min: 1) |
+| `cycle_time_us` | int | Nao | 1000 | Tempo de ciclo em microssegundos (min: 100) |
 | `watchdog_timeout_cycles` | int | Nao | 3 | Ciclos sem resposta para acionar watchdog |
 | `log_level` | string | Nao | "info" | Nivel de log: "debug", "info", "warn", "error" |
 
-#### 3.2.3 config.topology[] (lista de couplers/slaves)
+#### 3.2.3 config.slaves[] (lista flat de slaves)
 
-Cada entrada na topologia representa um **coupler** EtherCAT com seus modulos.
-A estrutura hierarquica reflete a organizacao fisica: Coupler -> Modulos -> Channels.
+Lista plana de todos os slaves no barramento EtherCAT, ordenada por `position`.
+Corresponde diretamente ao array `ec_slave[]` da SOEM. Couplers e modulos estao
+no mesmo nivel - a distincao e apenas pelo campo `type`.
 
-**Coupler (nivel superior):**
+**Slave:**
 
 | Campo | Tipo | Obrigatorio | Descricao |
 |-------|------|-------------|-----------|
-| `position` | int | Sim | Posicao na rede EtherCAT (1-based) |
-| `name` | string | Sim | Nome do dispositivo (ex: "EK1100") |
-| `type` | string | Sim | Tipo: "coupler" |
+| `position` | int | Sim | Posicao no barramento EtherCAT (1-based), corresponde a `ec_slave[position]` |
+| `name` | string | Sim | Nome do dispositivo (ex: "EK1100", "EL1008") |
+| `type` | string | Sim | Tipo: "coupler", "digital_input", "digital_output", "analog_input", "analog_output" |
 | `vendor_id` | string | Sim | Vendor ID hexadecimal (ex: "0x00000002") |
 | `product_code` | string | Sim | Product Code hexadecimal |
 | `revision` | string | Nao | Revision Number hexadecimal |
-| `modules` | array | Sim | Lista de modulos conectados ao coupler |
-
-**Module (sub-nivel do coupler):**
-
-| Campo | Tipo | Obrigatorio | Descricao |
-|-------|------|-------------|-----------|
-| `position` | int | Sim | Posicao na rede EtherCAT (1-based, global) |
-| `name` | string | Sim | Nome do modulo (ex: "EL1008") |
-| `type` | string | Sim | Tipo: "digital_input", "digital_output", "analog_input", "analog_output" |
-| `vendor_id` | string | Sim | Vendor ID hexadecimal |
-| `product_code` | string | Sim | Product Code hexadecimal |
-| `revision` | string | Nao | Revision Number hexadecimal |
-| `channels` | array | Sim | Lista de channels (pontos de I/O) |
+| `channels` | array | Sim | Lista de channels (pontos de I/O). Vazia para couplers |
 | `sdo_configurations` | array | Nao | Configuracoes SDO para aplicar no startup |
 | `rx_pdos` | array | Sim | RxPDOs (dados enviados para o slave - outputs) |
 | `tx_pdos` | array | Sim | TxPDOs (dados recebidos do slave - inputs) |
@@ -631,7 +626,7 @@ located var no programa IEC do PLC.
 
 | Campo | Tipo | Obrigatorio | Descricao |
 |-------|------|-------------|-----------|
-| `index` | int | Sim | Indice do channel no modulo (0-based) |
+| `index` | int | Sim | Indice do channel no slave (0-based) |
 | `name` | string | Sim | Nome descritivo (ex: "Input 1") |
 | `type` | string | Sim | Tipo de I/O: "digital_input", "digital_output", "analog_input", "analog_output" |
 | `bit_length` | int | Sim | Tamanho em bits: 1 (BOOL), 8 (BYTE), 16 (INT/UINT), 32 (DINT/UDINT) |
@@ -717,8 +712,8 @@ O Runtime deve validar o JSON recebido em dois niveis:
 - Indices PDO/SDO em formato hexadecimal valido
 
 **2. Validacao de topologia (no start_loop()):**
-- Numero de slaves fisicos na rede == numero de slaves no JSON
-- Para cada slave: vendor_id e product_code fisicos == configuracao JSON
+- Numero de slaves fisicos na rede == tamanho do array `slaves` no JSON
+- Para cada slave: `ec_slave[position].man` == vendor_id e `ec_slave[position].id` == product_code do JSON
 - Se houver divergencia, logar erro detalhado e abortar
 
 ---
@@ -809,9 +804,9 @@ typedef struct {
 } ecat_channel_t;
 
 typedef struct {
-    int               position;
+    int               position;        // ec_slave[position] na SOEM (1-based)
     char              name[ECAT_MAX_NAME_LEN];
-    char              type[20];
+    char              type[20];        // "coupler", "digital_input", etc.
     uint32_t          vendor_id;
     uint32_t          product_code;
     uint32_t          revision;
@@ -823,21 +818,11 @@ typedef struct {
     int               rx_pdo_count;
     ecat_pdo_t        tx_pdos[ECAT_MAX_PDOS];
     int               tx_pdo_count;
-} ecat_module_t;
-
-typedef struct {
-    int              position;
-    char             name[ECAT_MAX_NAME_LEN];
-    uint32_t         vendor_id;
-    uint32_t         product_code;
-    uint32_t         revision;
-    ecat_module_t    modules[ECAT_MAX_MODULES];
-    int              module_count;
-} ecat_coupler_t;
+} ecat_slave_t;
 
 typedef struct {
     char             interface[32];
-    int              cycle_time_ms;
+    int              cycle_time_us;
     int              watchdog_timeout_cycles;
     char             log_level[8];
 } ecat_master_config_t;
@@ -852,8 +837,8 @@ typedef struct {
 
 typedef struct {
     ecat_master_config_t      master;
-    ecat_coupler_t            topology[ECAT_MAX_SLAVES];
-    int                       coupler_count;
+    ecat_slave_t              slaves[ECAT_MAX_SLAVES];  // flat list
+    int                       slave_count;
     ecat_diagnostics_config_t diagnostics;
 } ecat_config_t;
 
@@ -939,7 +924,7 @@ start_loop():
 **Tarefas:**
 1. Implementar leitura de SDOs (`ec_SDOread`)
 2. Implementar escrita de SDOs (`ec_SDOwrite`)
-3. Iterar sobre `sdo_configurations` de cada modulo no JSON
+3. Iterar sobre `sdo_configurations` de cada slave no JSON
 4. Aplicar SDOs na fase Pre-Op antes de transicionar para Safe-Op
 5. Tratar erros de SDO (device nao suporta, valor invalido, etc.)
 
@@ -948,10 +933,10 @@ start_loop():
 
 **Fluxo:**
 ```
-Para cada modulo no JSON:
+Para cada slave no JSON:
   Se sdo_configurations nao vazio:
     Para cada SDO:
-      ec_SDOwrite(slave, index, subindex, value, sizeof(value))
+      ec_SDOwrite(slave.position, index, subindex, value, sizeof(value))
       Se erro -> logar e decidir (abortar ou continuar)
 ```
 
@@ -1020,9 +1005,9 @@ void ecat_pdo_map_free(ecat_pdo_map_t *map);
 
 **Algoritmo de calculo de offset:**
 ```
-Para cada modulo na topologia:
-  slave_index = modulo.position - 1  (0-based para SOEM)
-  Para cada TxPDO do modulo:
+Para cada slave na lista:
+  slave_index = slave.position - 1  (0-based para SOEM)
+  Para cada TxPDO do slave:
     bit_offset = 0
     Para cada entry do PDO:
       Se entry.data_type != "PAD" E channel mapeado para esta entry:
