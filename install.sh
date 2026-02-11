@@ -401,6 +401,12 @@ build_native_plugins() {
     # Create plugins output directory
     mkdir -p "$plugins_output_dir"
 
+    # Initialize git submodules (needed by plugins that vendor libraries like SOEM)
+    if [ -f "$OPENPLC_DIR/.gitmodules" ]; then
+        log_info "Initializing git submodules for native plugins..."
+        git -C "$OPENPLC_DIR" submodule update --init --recursive
+    fi
+
     # Find directories with CMakeLists.txt (indicates buildable plugin)
     local plugins_found=0
     local plugins_built=0
