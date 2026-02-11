@@ -1,0 +1,136 @@
+/**
+ * @file ethercat_io.h
+ * @brief EtherCAT I/O Module — IEC location parsing, channel mapping, and process data exchange
+ *
+ * Bridges the SOEM IOmap and the OpenPLC runtime I/O buffers.
+ * Provides:
+ *  - IEC 61131-3 location string parser (%IX0.0, %QW3, etc.)
+ *  - Channel map builder that links each configured channel to its
+ *    IOmap byte/bit and PLC buffer position
+ *  - Per-cycle read/write helpers called from cycle_start/cycle_end
+ */
+
+#ifndef ETHERCAT_IO_H
+#define ETHERCAT_IO_H
+
+#include <stdint.h>
+#include "ethercat_config.h"
+#include "plugin_types.h"
+#include "plugin_logger.h"
+#include "soem/soem.h"
+
+/* Maximum entries in a single direction of the channel map */
+#define ECAT_MAX_MAP_ENTRIES 256
+
+/**
+ * @brief IEC 61131-3 data size qualifiers
+ */
+typedef enum {
+    IEC_SIZE_BIT,    /* X — single bit   */
+    IEC_SIZE_BYTE,   /* B — 1 byte       */
+    IEC_SIZE_WORD,   /* W — 2 bytes      */
+    IEC_SIZE_DWORD,  /* D — 4 bytes      */
+    IEC_SIZE_LWORD   /* L — 8 bytes      */
+} iec_size_t;
+
+/**
+ * @brief IEC 61131-3 direction qualifiers
+ */
+typedef enum {
+    IEC_DIR_INPUT,   /* I — physical input  */
+    IEC_DIR_OUTPUT   /* Q — physical output */
+} iec_dir_t;
+
+/**
+ * @brief Parsed IEC location — result of parsing a string like "%IX0.3"
+ */
+typedef struct {
+    iec_dir_t  direction;   /* I or Q            */
+    iec_size_t size;        /* X, B, W, D, L     */
+    int        byte_index;  /* byte address       */
+    int        bit_index;   /* bit within byte (X only, 0-7; -1 otherwise) */
+} iec_location_t;
+
+/**
+ * @brief Single entry in the channel map
+ *
+ * Ties one PDO entry (IOmap side) to one PLC buffer position.
+ */
+typedef struct {
+    /* IOmap side */
+    uint8_t *iomap_ptr;        /* pointer into the SOEM IOmap buffer     */
+    int      iomap_bit_offset; /* bit offset within *iomap_ptr (0-7)     */
+    uint8_t  bit_length;       /* channel width in bits                  */
+
+    /* PLC side */
+    iec_size_t size;           /* IEC size qualifier                     */
+    int        byte_index;     /* byte index into PLC buffer             */
+    int        bit_index;      /* bit index (IEC_SIZE_BIT only, else -1) */
+} ecat_channel_map_entry_t;
+
+/**
+ * @brief Complete channel map — separate arrays for inputs and outputs
+ */
+typedef struct {
+    ecat_channel_map_entry_t inputs[ECAT_MAX_MAP_ENTRIES];
+    int                      input_count;
+    ecat_channel_map_entry_t outputs[ECAT_MAX_MAP_ENTRIES];
+    int                      output_count;
+} ecat_channel_map_t;
+
+/**
+ * @brief Parse an IEC 61131-3 location string into its components
+ *
+ * Accepted format: %[IQ][XBWDL]<byte>[.<bit>]
+ *   - Direction: I (input) or Q (output)
+ *   - Size: X (bit), B (byte), W (word), D (dword), L (lword)
+ *   - Byte: decimal byte address
+ *   - Bit: optional, only valid for X size, 0-7
+ *
+ * @param loc_str  NUL-terminated IEC location string
+ * @param loc      Output parsed location
+ * @return 0 on success, -1 on parse error
+ */
+int ecat_io_parse_iec_location(const char *loc_str, iec_location_t *loc);
+
+/**
+ * @brief Build the channel map from configuration + live SOEM state
+ *
+ * Iterates every slave/channel in @p config, resolves the IOmap pointer
+ * via SOEM slave data, parses the IEC location, and stores the mapping
+ * for use in the per-cycle read/write functions.
+ *
+ * @param config  Parsed EtherCAT configuration
+ * @param map     Output channel map (zeroed before population)
+ * @param args    Runtime args (for buffer_size bounds check)
+ * @param logger  Logger instance
+ * @return 0 on success, -1 if no channels could be mapped
+ */
+int ecat_io_build_channel_map(const ecat_config_t *config,
+                              ecat_channel_map_t *map,
+                              plugin_runtime_args_t *args,
+                              plugin_logger_t *logger);
+
+/**
+ * @brief Copy inputs from IOmap into PLC input buffers
+ *
+ * Called from cycle_start() after process data has been received.
+ *
+ * @param map   Channel map built by ecat_io_build_channel_map()
+ * @param args  Runtime args with PLC buffer pointers
+ */
+void ecat_io_read_inputs(const ecat_channel_map_t *map,
+                         plugin_runtime_args_t *args);
+
+/**
+ * @brief Copy PLC output buffers into IOmap
+ *
+ * Called from cycle_end() before the next process data send.
+ *
+ * @param map   Channel map built by ecat_io_build_channel_map()
+ * @param args  Runtime args with PLC buffer pointers
+ */
+void ecat_io_write_outputs(const ecat_channel_map_t *map,
+                           plugin_runtime_args_t *args);
+
+#endif /* ETHERCAT_IO_H */

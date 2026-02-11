@@ -276,3 +276,37 @@ void ecat_master_close(plugin_logger_t *logger)
 
     plugin_logger_info(logger, "EtherCAT master closed");
 }
+
+/*
+ * =============================================================================
+ * Process Data and State Access
+ * =============================================================================
+ */
+
+int ecat_master_exchange_processdata(plugin_logger_t *logger)
+{
+    (void)logger;
+    ecx_send_processdata(&g_ecx_context);
+    int wkc = ecx_receive_processdata(&g_ecx_context, EC_TIMEOUTRET);
+    return wkc;
+}
+
+int ecat_master_get_expected_wkc(void)
+{
+    ec_groupt *grp = &g_ecx_context.grouplist[0];
+    return (grp->outputsWKC * 2) + grp->inputsWKC;
+}
+
+const ec_slavet *ecat_master_get_slave(int position)
+{
+    if (position < 1 || position > g_ecx_context.slavecount)
+        return NULL;
+    return &g_ecx_context.slavelist[position];
+}
+
+int ecat_master_is_operational(void)
+{
+    if (!g_soem_initialized)
+        return 0;
+    return (g_ecx_context.slavelist[0].state == EC_STATE_OPERATIONAL) ? 1 : 0;
+}
