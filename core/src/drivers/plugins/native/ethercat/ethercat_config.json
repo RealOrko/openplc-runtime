@@ -1,0 +1,22 @@
+[
+  {
+    "name": "ethercat_master",
+    "protocol": "ETHERCAT",
+    "config": {
+      "master": {
+        "interface": "eth0",
+        "cycle_time_us": 1000,
+        "watchdog_timeout_cycles": 3,
+        "log_level": "info"
+      },
+      "slaves": [],
+      "diagnostics": {
+        "log_connections": true,
+        "log_data_access": false,
+        "log_errors": true,
+        "max_log_entries": 10000,
+        "status_update_interval_ms": 500
+      }
+    }
+  }
+]
