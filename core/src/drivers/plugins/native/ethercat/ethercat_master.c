@@ -283,11 +283,11 @@ void ecat_master_close(plugin_logger_t *logger)
  * =============================================================================
  */
 
-int ecat_master_exchange_processdata(plugin_logger_t *logger)
+int ecat_master_exchange_processdata(int timeout_us)
 {
-    (void)logger;
     ecx_send_processdata(&g_ecx_context);
-    int wkc = ecx_receive_processdata(&g_ecx_context, EC_TIMEOUTRET);
+    int wkc = ecx_receive_processdata(&g_ecx_context,
+                                       (timeout_us > 0) ? timeout_us : EC_TIMEOUTRET);
     return wkc;
 }
 

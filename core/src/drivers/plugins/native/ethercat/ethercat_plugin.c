@@ -21,6 +21,46 @@
 #include "ethercat_config.h"
 #include "ethercat_master.h"
 #include "ethercat_io.h"
+#include "soem/soem.h"   /* osal_get_monotonic_time, ec_timet */
+
+/*
+ * =============================================================================
+ * Cycle Diagnostics
+ * =============================================================================
+ */
+
+/** Number of cycles between diagnostic log reports */
+#define ECAT_DIAG_REPORT_INTERVAL 10000
+
+/** Minimum timeout for receive in microseconds */
+#define ECAT_MIN_RECEIVE_TIMEOUT_US 200
+
+typedef struct {
+    uint64_t cycle_count;         /* total cycles executed              */
+    uint64_t exchange_ns;         /* last send+receive duration (ns)    */
+    uint64_t io_read_ns;          /* last read_inputs duration (ns)     */
+    uint64_t io_write_ns;         /* last write_outputs duration (ns)   */
+    uint64_t total_ns;            /* last full cycle total (ns)         */
+    uint64_t max_exchange_ns;     /* worst-case send+receive            */
+    uint64_t max_total_ns;        /* worst-case total                   */
+    uint64_t sum_total_ns;        /* running sum for average            */
+} ecat_cycle_diag_t;
+
+/**
+ * @brief Convert ec_timet (struct timespec) to nanoseconds
+ */
+static inline uint64_t timespec_to_ns(const ec_timet *ts)
+{
+    return (uint64_t)ts->tv_sec * 1000000000ULL + (uint64_t)ts->tv_nsec;
+}
+
+/**
+ * @brief Return elapsed nanoseconds between two timestamps
+ */
+static inline uint64_t elapsed_ns(const ec_timet *start, const ec_timet *end)
+{
+    return timespec_to_ns(end) - timespec_to_ns(start);
+}
 
 /*
  * =============================================================================
@@ -34,6 +74,9 @@ static bool g_initialized = false;
 static bool g_running = false;
 static ecat_channel_map_t g_channel_map;
 static int g_consecutive_wkc_errors = 0;
+static int g_expected_wkc = 0;
+static int g_receive_timeout_us = 0;
+static ecat_cycle_diag_t g_diag;
 
 /*
  * =============================================================================
@@ -132,7 +175,22 @@ void start_loop(void)
 
     /* Build channel map for process data exchange */
     ecat_io_build_channel_map(&g_config, &g_channel_map, &g_runtime_args, &g_logger);
+
+    /* Cache expected WKC — it never changes after config_map_group */
+    g_expected_wkc = ecat_master_get_expected_wkc();
+    plugin_logger_info(&g_logger, "Expected WKC: %d", g_expected_wkc);
+
+    /* Compute adaptive receive timeout: 75% of cycle_time, clamped to a minimum.
+     * This prevents a lost packet from blocking longer than one scan cycle. */
+    g_receive_timeout_us = (g_config.master.cycle_time_us * 3) / 4;
+    if (g_receive_timeout_us < ECAT_MIN_RECEIVE_TIMEOUT_US)
+        g_receive_timeout_us = ECAT_MIN_RECEIVE_TIMEOUT_US;
+    plugin_logger_info(&g_logger, "Receive timeout: %d us (cycle_time=%d us)",
+                       g_receive_timeout_us, g_config.master.cycle_time_us);
+
+    /* Reset cycle state */
     g_consecutive_wkc_errors = 0;
+    memset(&g_diag, 0, sizeof(g_diag));
 
     g_running = true;
     plugin_logger_info(&g_logger, "EtherCAT master started successfully");
@@ -150,8 +208,20 @@ void stop_loop(void)
 
     plugin_logger_info(&g_logger, "Stopping EtherCAT master...");
 
+    /* Log final diagnostics */
+    if (g_diag.cycle_count > 0) {
+        uint64_t avg_us = (g_diag.sum_total_ns / g_diag.cycle_count) / 1000;
+        plugin_logger_info(&g_logger,
+            "Final cycle stats: %llu cycles, avg=%llu us, max_total=%llu us, max_exchange=%llu us",
+            (unsigned long long)g_diag.cycle_count,
+            (unsigned long long)avg_us,
+            (unsigned long long)(g_diag.max_total_ns / 1000),
+            (unsigned long long)(g_diag.max_exchange_ns / 1000));
+    }
+
     memset(&g_channel_map, 0, sizeof(g_channel_map));
     g_consecutive_wkc_errors = 0;
+    g_expected_wkc = 0;
 
     ecat_master_close(&g_logger);
     g_running = false;
@@ -179,21 +249,28 @@ void cleanup(void)
  *
  * Exchanges process data with the bus (sends previous outputs, receives
  * current inputs), then copies IOmap input data into PLC input buffers.
+ * Measures exchange and I/O copy durations for diagnostics.
  */
 void cycle_start(void)
 {
     if (!g_running)
         return;
 
-    int expected_wkc = ecat_master_get_expected_wkc();
-    int wkc = ecat_master_exchange_processdata(&g_logger);
+    ec_timet t0, t1, t2;
 
-    if (wkc < expected_wkc) {
+    /* Measure process data exchange */
+    osal_get_monotonic_time(&t0);
+    int wkc = ecat_master_exchange_processdata(g_receive_timeout_us);
+    osal_get_monotonic_time(&t1);
+
+    g_diag.exchange_ns = elapsed_ns(&t0, &t1);
+
+    if (wkc < g_expected_wkc) {
         g_consecutive_wkc_errors++;
         if (g_consecutive_wkc_errors == 1 || (g_consecutive_wkc_errors % 100) == 0) {
             plugin_logger_warn(&g_logger,
                 "WKC error: expected %d, got %d (consecutive errors: %d)",
-                expected_wkc, wkc, g_consecutive_wkc_errors);
+                g_expected_wkc, wkc, g_consecutive_wkc_errors);
         }
         if (g_config.master.watchdog_timeout_cycles > 0 &&
             g_consecutive_wkc_errors >= g_config.master.watchdog_timeout_cycles) {
@@ -207,7 +284,12 @@ void cycle_start(void)
     }
 
     g_consecutive_wkc_errors = 0;
+
+    /* Measure input copy */
     ecat_io_read_inputs(&g_channel_map, &g_runtime_args);
+    osal_get_monotonic_time(&t2);
+
+    g_diag.io_read_ns = elapsed_ns(&t1, &t2);
 }
 
 /**
@@ -215,6 +297,7 @@ void cycle_start(void)
  *
  * Copies PLC output buffers into the IOmap so they are sent on the
  * next cycle_start() process data exchange.
+ * Accumulates cycle diagnostics and logs periodic reports.
  */
 void cycle_end(void)
 {
@@ -227,5 +310,37 @@ void cycle_end(void)
         return;
     }
 
+    ec_timet t0, t1;
+
+    /* Measure output copy */
+    osal_get_monotonic_time(&t0);
     ecat_io_write_outputs(&g_channel_map, &g_runtime_args);
+    osal_get_monotonic_time(&t1);
+
+    g_diag.io_write_ns = elapsed_ns(&t0, &t1);
+
+    /* Update diagnostics */
+    g_diag.total_ns = g_diag.exchange_ns + g_diag.io_read_ns + g_diag.io_write_ns;
+    g_diag.cycle_count++;
+    g_diag.sum_total_ns += g_diag.total_ns;
+
+    if (g_diag.exchange_ns > g_diag.max_exchange_ns)
+        g_diag.max_exchange_ns = g_diag.exchange_ns;
+    if (g_diag.total_ns > g_diag.max_total_ns)
+        g_diag.max_total_ns = g_diag.total_ns;
+
+    /* Periodic diagnostics report */
+    if ((g_diag.cycle_count % ECAT_DIAG_REPORT_INTERVAL) == 0) {
+        uint64_t avg_us = (g_diag.sum_total_ns / g_diag.cycle_count) / 1000;
+        plugin_logger_info(&g_logger,
+            "Cycle stats (last %llu): avg=%llu us, max_total=%llu us, "
+            "max_exchange=%llu us, last=[exch=%llu us, rd=%llu us, wr=%llu us]",
+            (unsigned long long)g_diag.cycle_count,
+            (unsigned long long)avg_us,
+            (unsigned long long)(g_diag.max_total_ns / 1000),
+            (unsigned long long)(g_diag.max_exchange_ns / 1000),
+            (unsigned long long)(g_diag.exchange_ns / 1000),
+            (unsigned long long)(g_diag.io_read_ns / 1000),
+            (unsigned long long)(g_diag.io_write_ns / 1000));
+    }
 }

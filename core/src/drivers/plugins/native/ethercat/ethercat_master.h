@@ -58,10 +58,10 @@ void ecat_master_close(plugin_logger_t *logger);
  *
  * Sends outputs to slaves and receives inputs.
  *
- * @param logger Plugin logger instance
+ * @param timeout_us Receive timeout in microseconds (0 = use SOEM default)
  * @return Working counter value from receive, or -1 on error
  */
-int ecat_master_exchange_processdata(plugin_logger_t *logger);
+int ecat_master_exchange_processdata(int timeout_us);
 
 /**
  * @brief Get the expected working counter for the bus
