@@ -65,4 +65,17 @@ void cycle_start(void);
  */
 void cycle_end(void);
 
+/**
+ * @brief Execute an async command (e.g., network scan)
+ *
+ * Commands are routed from the unix socket via plugin_driver_execute_command().
+ * Uses a temporary SOEM context (not the master's g_ecx_context).
+ *
+ * @param command_json JSON string with "command" and "params" fields
+ * @param response Buffer for JSON response
+ * @param response_size Size of response buffer
+ * @return 0 on success, -1 on error
+ */
+int execute_command(const char *command_json, char *response, size_t response_size);
+
 #endif /* ETHERCAT_PLUGIN_H */

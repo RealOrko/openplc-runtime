@@ -258,8 +258,21 @@ def handle_upload_file(data: dict) -> dict:
         }
 
 
+def handle_plugin_command(data: dict) -> dict:
+    plugin_name = data.get("plugin")
+    command = data.get("command")
+    params = data.get("params", {})
+
+    if not plugin_name or not command:
+        return {"error": "Missing 'plugin' or 'command'"}
+
+    command_json = json.dumps({"command": command, "params": params})
+    return runtime_manager.send_plugin_command(plugin_name, command_json)
+
+
 POST_HANDLERS: dict[str, Callable[[dict], dict]] = {
     "upload-file": handle_upload_file,
+    "plugin-command": handle_plugin_command,
 }
 
 

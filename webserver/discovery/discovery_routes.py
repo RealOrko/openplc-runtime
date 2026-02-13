@@ -3,11 +3,12 @@
 Endpoints:
     GET  /api/discovery/interfaces          - List network interfaces (common)
     GET  /api/discovery/ethercat/status     - Check if EtherCAT discovery service is available
-    POST /api/discovery/ethercat/scan       - Scan network for EtherCAT slaves
+    POST /api/discovery/ethercat/scan       - Scan network for EtherCAT slaves (via SOEM plugin)
     POST /api/discovery/ethercat/validate   - Validate EtherCAT configuration
     POST /api/discovery/ethercat/test       - Test connection to specific EtherCAT slave
 """
 
+import json
 from dataclasses import asdict
 
 from flask import Blueprint, jsonify, request
@@ -48,11 +49,16 @@ def ethercat_status():
               type: string
               description: Status message
     """
-    available = is_discovery_available()
+    # Discovery is now handled by the native EtherCAT plugin via SOEM.
+    # Check if the runtime is reachable as a proxy for plugin availability.
+    from webserver.app import runtime_manager
+
+    ping_response = runtime_manager.ping()
+    available = ping_response is not None and "OK" in ping_response
     if available:
-        message = "Discovery service is ready"
+        message = "Discovery service is ready (native SOEM plugin)"
     else:
-        message = "Discovery venv not configured. Run: scripts/setup_discovery_venv.sh"
+        message = "Runtime not reachable. EtherCAT discovery requires a running runtime."
     return jsonify({"available": available, "message": message})
 
 
@@ -208,29 +214,31 @@ def ethercat_scan():
     if not interface:
         return jsonify({"status": "error", "message": "Missing required field: 'interface'"}), 400
 
-    timeout_ms = data.get("timeout_ms", 5000)
-    if not isinstance(timeout_ms, int) or timeout_ms <= 0:
-        return (
-            jsonify({"status": "error", "message": "'timeout_ms' must be a positive integer"}),
-            400,
-        )
+    # Route scan through the native EtherCAT plugin via unix socket
+    from webserver.app import runtime_manager
 
-    result = scan_network(interface, timeout_ms)
+    result = runtime_manager.send_plugin_command(
+        "ethercat",
+        json.dumps({"command": "scan", "params": {"interface": interface}}),
+        timeout=10.0,
+    )
 
-    # Convert dataclass to dict for JSON response
-    response = {
-        "status": result.status.value,
-        "devices": [asdict(device) for device in result.devices],
-        "message": result.message,
-        "scan_time_ms": result.scan_time_ms,
-        "interface": result.interface,
-    }
+    if "error" in result:
+        return jsonify({
+            "status": "error",
+            "devices": [],
+            "message": result["error"],
+            "scan_time_ms": 0,
+            "interface": interface,
+        }), 500
 
-    if result.status == DiscoveryStatus.SUCCESS:
-        status_code = 200
-    else:
-        status_code = _status_to_http_code(result.status)
-    return jsonify(response), status_code
+    return jsonify({
+        "status": result.get("status", "success"),
+        "devices": result.get("devices", []),
+        "message": result.get("message", ""),
+        "scan_time_ms": 0,
+        "interface": interface,
+    }), 200
 
 
 @discovery_bp.route("/ethercat/validate", methods=["POST"])

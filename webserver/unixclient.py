@@ -54,7 +54,7 @@ class SyncUnixClient:
             self.sock.settimeout(timeout)
             try:
                 buffer = bytearray()
-                max_size = 8192 * 2 + 256
+                max_size = 65536 + 256
 
                 while len(buffer) < max_size:
                     chunk = self.sock.recv(4096)
@@ -102,7 +102,7 @@ class SyncUnixClient:
             self.sock.settimeout(timeout)
             try:
                 buffer = bytearray()
-                max_size = 8192 * 2 + 256
+                max_size = 65536 + 256
 
                 while len(buffer) < max_size:
                     chunk = self.sock.recv(4096)

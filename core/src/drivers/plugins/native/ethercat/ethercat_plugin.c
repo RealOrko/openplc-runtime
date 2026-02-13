@@ -22,6 +22,7 @@
 #include "ethercat_master.h"
 #include "ethercat_io.h"
 #include "soem/soem.h"   /* osal_get_monotonic_time, ec_timet */
+#include "cjson/cJSON.h"  /* JSON parsing for execute_command */
 
 /*
  * =============================================================================
@@ -343,4 +344,118 @@ void cycle_end(void)
             (unsigned long long)(g_diag.io_read_ns / 1000),
             (unsigned long long)(g_diag.io_write_ns / 1000));
     }
+}
+
+/*
+ * =============================================================================
+ * Async Command Handling (execute_command)
+ * =============================================================================
+ */
+
+/**
+ * @brief Handle the "scan" command using a temporary SOEM context
+ *
+ * Creates a separate ecx_contextt (not the master's g_ecx_context) to scan
+ * the bus for slaves. This allows scanning even when the master is not running.
+ */
+static int handle_scan_command(cJSON *root, char *response, size_t response_size)
+{
+    cJSON *params = cJSON_GetObjectItemCaseSensitive(root, "params");
+    cJSON *iface = params ? cJSON_GetObjectItemCaseSensitive(params, "interface") : NULL;
+
+    if (!iface || !cJSON_IsString(iface)) {
+        snprintf(response, response_size, "{\"error\":\"missing 'interface' param\"}");
+        return -1;
+    }
+
+    /* Refuse scan while master is actively running on the bus */
+    if (g_running) {
+        snprintf(response, response_size,
+            "{\"error\":\"EtherCAT master is running. Stop the PLC before scanning.\"}");
+        return -1;
+    }
+
+    /* Temporary SOEM context for scan (independent from the master context) */
+    ecx_contextt scan_ctx;
+    memset(&scan_ctx, 0, sizeof(scan_ctx));
+
+    if (!ecx_init(&scan_ctx, iface->valuestring)) {
+        snprintf(response, response_size,
+            "{\"error\":\"Failed to open interface '%s'\"}", iface->valuestring);
+        return -1;
+    }
+
+    int slave_count = ecx_config_init(&scan_ctx);
+    if (slave_count <= 0) {
+        ecx_close(&scan_ctx);
+        snprintf(response, response_size,
+            "{\"status\":\"success\",\"devices\":[],\"message\":\"No slaves found\",\"slave_count\":0}");
+        return 0;
+    }
+
+    /* Build JSON response with discovered slaves */
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddStringToObject(resp, "status", "success");
+    cJSON *devices = cJSON_AddArrayToObject(resp, "devices");
+
+    for (int i = 1; i <= scan_ctx.slavecount; i++) {
+        ec_slavet *s = &scan_ctx.slavelist[i];
+        cJSON *dev = cJSON_CreateObject();
+        cJSON_AddNumberToObject(dev, "position", i);
+        cJSON_AddStringToObject(dev, "name", s->name);
+        cJSON_AddNumberToObject(dev, "vendor_id", s->eep_man);
+        cJSON_AddNumberToObject(dev, "product_code", s->eep_id);
+        cJSON_AddNumberToObject(dev, "revision", s->eep_rev);
+        cJSON_AddNumberToObject(dev, "serial_number", s->eep_ser);
+        cJSON_AddStringToObject(dev, "state", "UNKNOWN");
+        cJSON_AddNumberToObject(dev, "al_status_code", 0);
+        cJSON_AddBoolToObject(dev, "has_coe", (s->mbx_proto & 0x04) != 0);
+        cJSON_AddNumberToObject(dev, "input_bytes", 0);
+        cJSON_AddNumberToObject(dev, "output_bytes", 0);
+        cJSON_AddItemToArray(devices, dev);
+    }
+
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Found %d EtherCAT slave(s)", scan_ctx.slavecount);
+    cJSON_AddStringToObject(resp, "message", msg);
+    cJSON_AddNumberToObject(resp, "slave_count", scan_ctx.slavecount);
+
+    char *json_str = cJSON_PrintUnformatted(resp);
+    if (json_str) {
+        snprintf(response, response_size, "%s", json_str);
+        free(json_str);
+    }
+    cJSON_Delete(resp);
+
+    ecx_close(&scan_ctx);
+    return 0;
+}
+
+/**
+ * @brief Execute an async command routed from the unix socket
+ */
+int execute_command(const char *command_json, char *response, size_t response_size)
+{
+    cJSON *root = cJSON_Parse(command_json);
+    if (!root) {
+        snprintf(response, response_size, "{\"error\":\"invalid JSON\"}");
+        return -1;
+    }
+
+    cJSON *cmd = cJSON_GetObjectItemCaseSensitive(root, "command");
+    if (!cmd || !cJSON_IsString(cmd)) {
+        cJSON_Delete(root);
+        snprintf(response, response_size, "{\"error\":\"missing 'command' field\"}");
+        return -1;
+    }
+
+    int result = -1;
+    if (strcmp(cmd->valuestring, "scan") == 0) {
+        result = handle_scan_command(root, response, response_size);
+    } else {
+        snprintf(response, response_size, "{\"error\":\"unknown command '%s'\"}", cmd->valuestring);
+    }
+
+    cJSON_Delete(root);
+    return result;
 }
