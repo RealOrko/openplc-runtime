@@ -25,6 +25,12 @@ void *plc_cycle_thread(void *arg)
 {
     PluginManager *pm = (PluginManager *)arg;
 
+    // Initialize scan cycle manager (priority-inheriting stats mutex)
+    if (scan_cycle_manager_init() != 0)
+    {
+        log_error("Failed to initialize scan cycle manager");
+    }
+
     // Initialize PLC with real-time optimizations
     set_realtime_priority();
     lock_memory();
@@ -107,6 +113,8 @@ void *plc_cycle_thread(void *arg)
         // Sleep until the next cycle should start
         sleep_until(&timer_start);
     }
+
+    scan_cycle_manager_cleanup();
 
     return NULL;
 }

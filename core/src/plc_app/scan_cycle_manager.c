@@ -17,7 +17,7 @@
 
 static uint64_t expected_start_us  = 0;
 static uint64_t last_start_us      = 0;
-static pthread_mutex_t stats_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t stats_mutex;
 
 plc_timing_stats_t plc_timing_stats = {.scan_time_min     = INT64_MAX,
                                        .cycle_latency_min = INT64_MAX,
@@ -125,6 +125,16 @@ bool get_timing_stats_snapshot(plc_timing_stats_t *snapshot)
     pthread_mutex_unlock(&stats_mutex);
 
     return snapshot->scan_count > 0;
+}
+
+int scan_cycle_manager_init(void)
+{
+    return init_rt_mutex(&stats_mutex);
+}
+
+void scan_cycle_manager_cleanup(void)
+{
+    pthread_mutex_destroy(&stats_mutex);
 }
 
 int format_timing_stats_response(char *buffer, size_t buffer_size)

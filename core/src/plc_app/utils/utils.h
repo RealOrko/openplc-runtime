@@ -2,6 +2,7 @@
 #define UTILS_H
 
 #include <dlfcn.h>
+#include <pthread.h>
 #include <sched.h>
 #include <sys/mman.h>
 #include <time.h>
@@ -70,5 +71,17 @@ size_t parse_hex_string(const char *hex_string, uint8_t *data);
  * @param prepend An optional string to prepend to the output (can be NULL)
  */
 void bytes_to_hex_string(const uint8_t *bytes, size_t len, char *out_str, size_t out_size, const char *prepend);
+
+/**
+ * @brief Initialize a mutex with PTHREAD_PRIO_INHERIT for priority inversion avoidance
+ *
+ * On Linux, sets the mutex protocol to PTHREAD_PRIO_INHERIT so that a thread
+ * holding the mutex temporarily inherits the priority of any higher-priority
+ * waiter. On MSYS2/Cygwin (no RT support), falls back to a regular mutex.
+ *
+ * @param mutex The mutex to initialize
+ * @return 0 on success, -1 on failure
+ */
+int init_rt_mutex(pthread_mutex_t *mutex);
 
 #endif // UTILS_H

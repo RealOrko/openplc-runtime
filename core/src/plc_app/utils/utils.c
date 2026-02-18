@@ -1,5 +1,6 @@
 #include "utils.h"
 #include <errno.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -101,6 +102,29 @@ void lock_memory(void)
 #else
     // Memory locking not available on MSYS2/Cygwin
     log_info("Memory locking not available on this platform");
+#endif
+}
+
+int init_rt_mutex(pthread_mutex_t *mutex)
+{
+#if HAS_REALTIME_FEATURES
+    pthread_mutexattr_t attr;
+    if (pthread_mutexattr_init(&attr) != 0)
+        return -1;
+    if (pthread_mutexattr_setprotocol(&attr, PTHREAD_PRIO_INHERIT) != 0)
+    {
+        pthread_mutexattr_destroy(&attr);
+        return -1;
+    }
+    if (pthread_mutex_init(mutex, &attr) != 0)
+    {
+        pthread_mutexattr_destroy(&attr);
+        return -1;
+    }
+    pthread_mutexattr_destroy(&attr);
+    return 0;
+#else
+    return pthread_mutex_init(mutex, NULL);
 #endif
 }
 
