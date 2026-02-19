@@ -134,6 +134,7 @@ static void parse_master_section(const cJSON *master, ecat_master_config_t *conf
 
     safe_strcpy(config->interface, get_string(master, "interface", "eth0"), sizeof(config->interface));
     config->cycle_time_us = get_int(master, "cycle_time_us", 1000);
+    config->receive_timeout_us = get_int(master, "receive_timeout_us", 2000);
     config->watchdog_timeout_cycles = get_int(master, "watchdog_timeout_cycles", 3);
     safe_strcpy(config->log_level, get_string(master, "log_level", "info"), sizeof(config->log_level));
 }
@@ -364,6 +365,7 @@ void ecat_config_init_defaults(ecat_config_t *config)
     /* Master defaults */
     safe_strcpy(config->master.interface, "eth0", sizeof(config->master.interface));
     config->master.cycle_time_us = 1000;
+    config->master.receive_timeout_us = 2000;
     config->master.watchdog_timeout_cycles = 3;
     safe_strcpy(config->master.log_level, "info", sizeof(config->master.log_level));
 
@@ -447,6 +449,11 @@ int ecat_config_validate(const ecat_config_t *config)
 
     /* Validate cycle time */
     if (config->master.cycle_time_us < 1) {
+        return ECAT_CONFIG_ERR_INVALID;
+    }
+
+    /* Validate receive timeout */
+    if (config->master.receive_timeout_us < 1) {
         return ECAT_CONFIG_ERR_INVALID;
     }
 

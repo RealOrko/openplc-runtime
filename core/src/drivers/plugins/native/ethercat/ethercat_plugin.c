@@ -33,9 +33,6 @@
 /** Number of cycles between diagnostic log reports */
 #define ECAT_DIAG_REPORT_INTERVAL 10000
 
-/** Minimum timeout for receive in microseconds */
-#define ECAT_MIN_RECEIVE_TIMEOUT_US 200
-
 typedef struct {
     uint64_t cycle_count;         /* total cycles executed              */
     uint64_t exchange_ns;         /* last send+receive duration (ns)    */
@@ -181,13 +178,8 @@ void start_loop(void)
     g_expected_wkc = ecat_master_get_expected_wkc();
     plugin_logger_info(&g_logger, "Expected WKC: %d", g_expected_wkc);
 
-    /* Compute adaptive receive timeout: 75% of cycle_time, clamped to a minimum.
-     * This prevents a lost packet from blocking longer than one scan cycle. */
-    g_receive_timeout_us = (g_config.master.cycle_time_us * 3) / 4;
-    if (g_receive_timeout_us < ECAT_MIN_RECEIVE_TIMEOUT_US)
-        g_receive_timeout_us = ECAT_MIN_RECEIVE_TIMEOUT_US;
-    plugin_logger_info(&g_logger, "Receive timeout: %d us (cycle_time=%d us)",
-                       g_receive_timeout_us, g_config.master.cycle_time_us);
+    g_receive_timeout_us = g_config.master.receive_timeout_us;
+    plugin_logger_info(&g_logger, "Receive timeout: %d us", g_receive_timeout_us);
 
     /* Reset cycle state */
     g_consecutive_wkc_errors = 0;
