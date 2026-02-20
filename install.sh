@@ -262,7 +262,9 @@ install_deps_msys2() {
         python-setuptools \
         python-cryptography \
         git \
-        sqlite3
+        sqlite3 \
+        msys2-w32api-headers \
+        msys2-w32api-runtime
 }
 
 compile_plc() {
@@ -400,6 +402,12 @@ build_native_plugins() {
 
     # Create plugins output directory
     mkdir -p "$plugins_output_dir"
+
+    # Initialize git submodules (needed by plugins that vendor libraries like SOEM)
+    if [ -f "$OPENPLC_DIR/.gitmodules" ]; then
+        log_info "Initializing git submodules for native plugins..."
+        git -C "$OPENPLC_DIR" submodule update --init --recursive
+    fi
 
     # Find directories with CMakeLists.txt (indicates buildable plugin)
     local plugins_found=0

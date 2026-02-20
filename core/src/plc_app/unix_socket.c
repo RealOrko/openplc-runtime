@@ -9,6 +9,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "../drivers/plugin_driver.h"
 #include "debug_handler.h"
 #include "plc_state_manager.h"
 #include "scan_cycle_manager.h"
@@ -18,6 +19,13 @@
 
 extern volatile sig_atomic_t keep_running;
 extern PLCState plc_state;
+
+static plugin_driver_t *g_plugin_driver = NULL;
+
+void unix_socket_set_plugin_driver(void *driver)
+{
+    g_plugin_driver = (plugin_driver_t *)driver;
+}
 
 // helper: read one line terminated by '\n' from a socket
 static ssize_t read_line(int fd, char *buffer, size_t max_length)
@@ -120,6 +128,52 @@ void handle_unix_socket_commands(const char *command, char *response, size_t res
         else
         {
             strncpy(response, "DEBUG:ERROR_PARSING\n", response_size);
+        }
+    }
+    else if (strncmp(command, "PLUGIN_CMD:", 11) == 0)
+    {
+        // Format: PLUGIN_CMD:<plugin_name>:<json_payload>
+        // NOTE: This handler is BLOCKING -- plugin commands like EtherCAT scan
+        // may take several seconds. The unix socket thread is single-client,
+        // so the caller must wait for the response.
+        const char *rest = &command[11];
+        const char *colon = strchr(rest, ':');
+        if (!colon || !g_plugin_driver)
+        {
+            snprintf(response, response_size,
+                     "PLUGIN_CMD:ERROR:{\"error\":\"invalid format or driver not set\"}\n");
+        }
+        else
+        {
+            // Extract plugin name
+            size_t name_len = colon - rest;
+            char plugin_name[64] = {0};
+            if (name_len >= sizeof(plugin_name))
+                name_len = sizeof(plugin_name) - 1;
+            strncpy(plugin_name, rest, name_len);
+
+            const char *json_payload = colon + 1;
+
+            log_info("Executing plugin command: plugin='%s'", plugin_name);
+
+            // Stack-allocated buffer for plugin output.
+            // MAX_RESPONSE_SIZE is 64KB; this leaves 256 bytes for the
+            // "PLUGIN_CMD:OK:" prefix. Fits comfortably in the default
+            // 8MB thread stack.
+            char plugin_response[MAX_RESPONSE_SIZE - 256];
+            memset(plugin_response, 0, sizeof(plugin_response));
+
+            int result = plugin_driver_execute_command(g_plugin_driver, plugin_name, json_payload,
+                                                       plugin_response, sizeof(plugin_response));
+
+            if (result == 0)
+            {
+                snprintf(response, response_size, "PLUGIN_CMD:OK:%s\n", plugin_response);
+            }
+            else
+            {
+                snprintf(response, response_size, "PLUGIN_CMD:ERROR:%s\n", plugin_response);
+            }
         }
     }
     else

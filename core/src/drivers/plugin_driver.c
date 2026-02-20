@@ -1009,7 +1009,18 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
     void *handle = dlopen(plugin->config.path, RTLD_LOCAL | RTLD_NOW);
     if (!handle)
     {
-        fprintf(stderr, "Failed to load native plugin '%s': %s\n", plugin->config.path, dlerror());
+        const char *err = dlerror();
+        fprintf(stderr, "Failed to load native plugin '%s': %s\n",
+                plugin->config.path, err ? err : "unknown error");
+        log_error("Failed to load native plugin '%s': %s",
+                  plugin->config.path, err ? err : "unknown error");
+#if defined(__CYGWIN__) || defined(_WIN32)
+        if (strstr(plugin->config.name, "ethercat") != NULL)
+        {
+            log_error("The EtherCAT plugin requires Npcap (https://npcap.com) to access "
+                      "the network interface. Please install Npcap and restart the runtime.");
+        }
+#endif
         free(native_bundle);
         return -1;
     }
@@ -1072,6 +1083,15 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
                 plugin->config.path);
     }
 
+    native_bundle->execute_command =
+        (plugin_execute_command_func_t)dlsym(handle, "execute_command");
+    if (!native_bundle->execute_command)
+    {
+        fprintf(stderr,
+                "Warning: 'execute_command' function not found in native plugin '%s' (optional)\n",
+                plugin->config.path);
+    }
+
     // Store the native bundle and handle in the plugin instance
     plugin->native_plugin = native_bundle;
 
@@ -1082,6 +1102,7 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
     printf("  - cycle_start: %s\n", native_bundle->cycle_start ? "(PASS)" : "(FAIL)");
     printf("  - cycle_end: %s\n", native_bundle->cycle_end ? "(PASS)" : "(FAIL)");
     printf("  - cleanup: %s\n", native_bundle->cleanup ? "(PASS)" : "(FAIL)");
+    printf("  - execute_command: %s\n", native_bundle->execute_command ? "(PASS)" : "(FAIL)");
 
     return 0;
 }
@@ -1150,6 +1171,39 @@ void plugin_driver_cycle_end(plugin_driver_t *driver)
             plugin->native_plugin->cycle_end();
         }
     }
+}
+
+// Route a command to a specific plugin by name
+int plugin_driver_execute_command(plugin_driver_t *driver, const char *plugin_name,
+                                  const char *command_json, char *response, size_t response_size)
+{
+    if (!driver || !plugin_name || !command_json)
+    {
+        snprintf(response, response_size, "{\"error\":\"invalid arguments\"}");
+        return -1;
+    }
+
+    for (int i = 0; i < driver->plugin_count; i++)
+    {
+        plugin_instance_t *plugin = &driver->plugins[i];
+        if (!plugin->config.enabled)
+            continue;
+        if (strcmp(plugin->config.name, plugin_name) != 0)
+            continue;
+
+        if (plugin->config.type == PLUGIN_TYPE_NATIVE && plugin->native_plugin &&
+            plugin->native_plugin->execute_command)
+        {
+            return plugin->native_plugin->execute_command(command_json, response, response_size);
+        }
+
+        snprintf(response, response_size,
+                 "{\"error\":\"plugin does not support execute_command\"}");
+        return -1;
+    }
+
+    snprintf(response, response_size, "{\"error\":\"plugin not found\"}");
+    return -1;
 }
 
 // Cleanup Python plugin

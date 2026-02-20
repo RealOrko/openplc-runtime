@@ -48,6 +48,11 @@ runtime_manager = RuntimeManager(
 
 runtime_manager.start()
 
+# Store in Flask app config so blueprints can access via current_app
+# without triggering a re-import of this module (which would create
+# a duplicate RuntimeManager when run with python -m webserver.app).
+app_restapi.config["RUNTIME_MANAGER"] = runtime_manager
+
 BASE_DIR: Final[Path] = Path(__file__).parent
 CERT_FILE: Final[Path] = (BASE_DIR / "certOPENPLC.pem").resolve()
 KEY_FILE: Final[Path] = (BASE_DIR / "keyOPENPLC.pem").resolve()
@@ -258,8 +263,21 @@ def handle_upload_file(data: dict) -> dict:
         }
 
 
+def handle_plugin_command(data: dict) -> dict:
+    plugin_name = data.get("plugin")
+    command = data.get("command")
+    params = data.get("params", {})
+
+    if not plugin_name or not command:
+        return {"error": "Missing 'plugin' or 'command'"}
+
+    command_json = json.dumps({"command": command, "params": params})
+    return runtime_manager.send_plugin_command(plugin_name, command_json)
+
+
 POST_HANDLERS: dict[str, Callable[[dict], dict]] = {
     "upload-file": handle_upload_file,
+    "plugin-command": handle_plugin_command,
 }
 
 
