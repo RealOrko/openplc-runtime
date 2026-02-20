@@ -130,8 +130,9 @@ int ecat_io_parse_iec_location(const char *loc_str, iec_location_t *loc)
  * @param cfg_slave   Configured slave (provides PDO lists from JSON)
  * @param channel     Channel to locate
  * @param is_output   true if channel is an output (RxPDO), false for input (TxPDO)
- * @param out_ptr     [out] pointer into IOmap buffer
- * @param out_bit     [out] bit offset within *out_ptr (0-7)
+ * @param out_ptr       [out] pointer into IOmap buffer
+ * @param out_bit       [out] bit offset within *out_ptr (0-7)
+ * @param out_data_type [out] parsed data type from the matching PDO entry (may be NULL)
  * @return 0 on success, -1 if channel's PDO entry was not found
  */
 static int calculate_iomap_offset(const ec_slavet *soem_slave,
@@ -139,7 +140,8 @@ static int calculate_iomap_offset(const ec_slavet *soem_slave,
                                   const ecat_channel_t *channel,
                                   bool is_output,
                                   uint8_t **out_ptr,
-                                  int *out_bit)
+                                  int *out_bit,
+                                  ecat_data_type_t *out_data_type)
 {
     /* Select PDO direction:
      *   Output channels → RxPDOs (master writes to slave) → soem_slave->outputs
@@ -178,6 +180,8 @@ static int calculate_iomap_offset(const ec_slavet *soem_slave,
                 entry->subindex == channel->pdo_entry_subindex) {
                 *out_ptr = base_ptr + (accumulated_bits / 8);
                 *out_bit = accumulated_bits % 8;
+                if (out_data_type)
+                    *out_data_type = entry->parsed_type;
                 return 0;
             }
 
@@ -186,6 +190,69 @@ static int calculate_iomap_offset(const ec_slavet *soem_slave,
     }
 
     return -1;  /* entry not found */
+}
+
+/*
+ * =============================================================================
+ * Data Type Validation Helpers
+ * =============================================================================
+ */
+
+/**
+ * @brief Return a human-readable name for an ecat_data_type_t value
+ */
+static const char *ecat_data_type_name(ecat_data_type_t dt)
+{
+    switch (dt) {
+    case ECAT_DTYPE_BOOL:   return "BOOL";
+    case ECAT_DTYPE_INT8:   return "INT8";
+    case ECAT_DTYPE_UINT8:  return "UINT8";
+    case ECAT_DTYPE_INT16:  return "INT16";
+    case ECAT_DTYPE_UINT16: return "UINT16";
+    case ECAT_DTYPE_INT32:  return "INT32";
+    case ECAT_DTYPE_UINT32: return "UINT32";
+    case ECAT_DTYPE_INT64:  return "INT64";
+    case ECAT_DTYPE_UINT64: return "UINT64";
+    case ECAT_DTYPE_REAL32: return "REAL32";
+    case ECAT_DTYPE_REAL64: return "REAL64";
+    case ECAT_DTYPE_PAD:    return "PAD";
+    default:                return "UNKNOWN";
+    }
+}
+
+/**
+ * @brief Return the expected IEC size qualifier for a given data type
+ *
+ * Used to validate that the IEC location width matches the PDO data type.
+ * Returns -1 for types where no specific size is expected (PAD, UNKNOWN).
+ */
+static int ecat_data_type_expected_iec_size(ecat_data_type_t dt)
+{
+    switch (dt) {
+    case ECAT_DTYPE_BOOL:                          return (int)IEC_SIZE_BIT;
+    case ECAT_DTYPE_INT8:   case ECAT_DTYPE_UINT8: return (int)IEC_SIZE_BYTE;
+    case ECAT_DTYPE_INT16:  case ECAT_DTYPE_UINT16:return (int)IEC_SIZE_WORD;
+    case ECAT_DTYPE_INT32:  case ECAT_DTYPE_UINT32:
+    case ECAT_DTYPE_REAL32:                        return (int)IEC_SIZE_DWORD;
+    case ECAT_DTYPE_INT64:  case ECAT_DTYPE_UINT64:
+    case ECAT_DTYPE_REAL64:                        return (int)IEC_SIZE_LWORD;
+    default:                                       return -1;
+    }
+}
+
+/**
+ * @brief Return a human-readable name for an iec_size_t value
+ */
+static const char *iec_size_name(iec_size_t sz)
+{
+    switch (sz) {
+    case IEC_SIZE_BIT:   return "BIT (X)";
+    case IEC_SIZE_BYTE:  return "BYTE (B)";
+    case IEC_SIZE_WORD:  return "WORD (W)";
+    case IEC_SIZE_DWORD: return "DWORD (D)";
+    case IEC_SIZE_LWORD: return "LWORD (L)";
+    default:             return "?";
+    }
 }
 
 /*
@@ -252,8 +319,10 @@ int ecat_io_build_channel_map(const ecat_config_t *config,
             /* Calculate IOmap offset by walking PDO entries */
             uint8_t *iomap_ptr = NULL;
             int iomap_bit = 0;
+            ecat_data_type_t pdo_data_type = ECAT_DTYPE_UNKNOWN;
             if (calculate_iomap_offset(soem_slave, cfg_slave, ch, is_output,
-                                       &iomap_ptr, &iomap_bit) != 0) {
+                                       &iomap_ptr, &iomap_bit,
+                                       &pdo_data_type) != 0) {
                 plugin_logger_warn(logger,
                     "Slave '%s' channel '%s': PDO entry not found "
                     "(pdo=%s entry=%s sub=%d), skipping",
@@ -261,6 +330,18 @@ int ecat_io_build_channel_map(const ecat_config_t *config,
                     ch->pdo_index, ch->pdo_entry_index, ch->pdo_entry_subindex);
                 errors++;
                 continue;
+            }
+
+            /* Validate: data type size must match IEC location size qualifier */
+            int expected_size = ecat_data_type_expected_iec_size(pdo_data_type);
+            if (expected_size >= 0 && expected_size != (int)iec_loc.size) {
+                plugin_logger_warn(logger,
+                    "Slave '%s' channel '%s': data type %s expects IEC size %s "
+                    "but location '%s' uses %s -- data may be truncated or corrupt",
+                    cfg_slave->name, ch->name,
+                    ecat_data_type_name(pdo_data_type),
+                    iec_size_name((iec_size_t)expected_size),
+                    ch->iec_location, iec_size_name(iec_loc.size));
             }
 
             /* Build the map entry */
@@ -271,6 +352,7 @@ int ecat_io_build_channel_map(const ecat_config_t *config,
             entry.size             = iec_loc.size;
             entry.byte_index       = iec_loc.byte_index;
             entry.bit_index        = iec_loc.bit_index;
+            entry.data_type        = pdo_data_type;
 
             /* Add to the appropriate direction array */
             if (iec_loc.direction == IEC_DIR_INPUT) {
@@ -294,8 +376,9 @@ int ecat_io_build_channel_map(const ecat_config_t *config,
             }
 
             plugin_logger_debug(logger,
-                "  Mapped: slave '%s' ch '%s' (%s) → %s byte=%d bit=%d",
-                cfg_slave->name, ch->name, ch->iec_location,
+                "  Mapped: slave '%s' ch '%s' [%s] (%s) -> %s byte=%d bit=%d",
+                cfg_slave->name, ch->name,
+                ecat_data_type_name(pdo_data_type), ch->iec_location,
                 (iec_loc.direction == IEC_DIR_INPUT) ? "INPUT" : "OUTPUT",
                 iec_loc.byte_index, iec_loc.bit_index);
         }

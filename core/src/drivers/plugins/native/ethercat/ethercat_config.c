@@ -10,6 +10,7 @@
 #include "ethercat_config.h"
 #include "cJSON.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -117,6 +118,75 @@ static uint32_t hex_to_uint32(const char *hex_str)
     return (uint32_t)strtoul(hex_str, NULL, 16);
 }
 
+/**
+ * @brief Case-insensitive string comparison
+ */
+static int strcasecmp_local(const char *a, const char *b)
+{
+    while (*a && *b) {
+        int diff = tolower((unsigned char)*a) - tolower((unsigned char)*b);
+        if (diff != 0)
+            return diff;
+        a++;
+        b++;
+    }
+    return tolower((unsigned char)*a) - tolower((unsigned char)*b);
+}
+
+ecat_data_type_t ecat_parse_data_type(const char *str)
+{
+    if (str == NULL || str[0] == '\0')
+        return ECAT_DTYPE_UNKNOWN;
+
+    /* Boolean */
+    if (strcasecmp_local(str, "BOOL") == 0)
+        return ECAT_DTYPE_BOOL;
+
+    /* 8-bit integer */
+    if (strcasecmp_local(str, "INT8") == 0 || strcasecmp_local(str, "SINT") == 0)
+        return ECAT_DTYPE_INT8;
+    if (strcasecmp_local(str, "UINT8") == 0 || strcasecmp_local(str, "USINT") == 0 ||
+        strcasecmp_local(str, "BYTE") == 0)
+        return ECAT_DTYPE_UINT8;
+
+    /* 16-bit integer */
+    if (strcasecmp_local(str, "INT16") == 0 || strcasecmp_local(str, "INT") == 0)
+        return ECAT_DTYPE_INT16;
+    if (strcasecmp_local(str, "UINT16") == 0 || strcasecmp_local(str, "UINT") == 0 ||
+        strcasecmp_local(str, "WORD") == 0)
+        return ECAT_DTYPE_UINT16;
+
+    /* 32-bit integer */
+    if (strcasecmp_local(str, "INT32") == 0 || strcasecmp_local(str, "DINT") == 0)
+        return ECAT_DTYPE_INT32;
+    if (strcasecmp_local(str, "UINT32") == 0 || strcasecmp_local(str, "UDINT") == 0 ||
+        strcasecmp_local(str, "DWORD") == 0)
+        return ECAT_DTYPE_UINT32;
+
+    /* 64-bit integer */
+    if (strcasecmp_local(str, "INT64") == 0 || strcasecmp_local(str, "LINT") == 0)
+        return ECAT_DTYPE_INT64;
+    if (strcasecmp_local(str, "UINT64") == 0 || strcasecmp_local(str, "ULINT") == 0 ||
+        strcasecmp_local(str, "LWORD") == 0)
+        return ECAT_DTYPE_UINT64;
+
+    /* 32-bit float (REAL) */
+    if (strcasecmp_local(str, "REAL") == 0 || strcasecmp_local(str, "REAL32") == 0 ||
+        strcasecmp_local(str, "FLOAT") == 0)
+        return ECAT_DTYPE_REAL32;
+
+    /* 64-bit float (LREAL) */
+    if (strcasecmp_local(str, "LREAL") == 0 || strcasecmp_local(str, "REAL64") == 0 ||
+        strcasecmp_local(str, "DOUBLE") == 0)
+        return ECAT_DTYPE_REAL64;
+
+    /* Padding */
+    if (strcasecmp_local(str, "PAD") == 0)
+        return ECAT_DTYPE_PAD;
+
+    return ECAT_DTYPE_UNKNOWN;
+}
+
 /*
  * =============================================================================
  * Section Parsers
@@ -169,6 +239,7 @@ static int parse_pdo_entry(const cJSON *entry_json, ecat_pdo_entry_t *entry)
     entry->bit_length = (uint8_t)get_int(entry_json, "bit_length", 0);
     safe_strcpy(entry->name, get_string(entry_json, "name", ""), sizeof(entry->name));
     safe_strcpy(entry->data_type, get_string(entry_json, "data_type", ""), sizeof(entry->data_type));
+    entry->parsed_type = ecat_parse_data_type(entry->data_type);
 
     return ECAT_CONFIG_OK;
 }
