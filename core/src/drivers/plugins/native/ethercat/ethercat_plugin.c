@@ -40,6 +40,8 @@
 
 typedef struct {
     uint64_t cycle_count;         /* total cycles executed              */
+    uint64_t wkc_error_count;     /* total WKC errors (wkc < expected)  */
+    uint64_t noframe_count;       /* total EC_NOFRAME (-1) errors       */
     uint64_t exchange_ns;         /* last send+receive duration (ns)    */
     uint64_t io_read_ns;          /* last read_inputs duration (ns)     */
     uint64_t io_write_ns;         /* last write_outputs duration (ns)   */
@@ -185,9 +187,7 @@ void start_loop(void)
     g_expected_wkc = ecat_master_get_expected_wkc();
     plugin_logger_info(&g_logger, "Expected WKC: %d", g_expected_wkc);
 
-    /* Compute adaptive receive timeout: 75% of cycle_time, clamped to a minimum.
-     * This prevents a lost packet from blocking longer than one scan cycle. */
-    g_receive_timeout_us = (g_config.master.cycle_time_us * 3) / 4;
+    g_receive_timeout_us = g_config.master.receive_timeout_us;
     if (g_receive_timeout_us < ECAT_MIN_RECEIVE_TIMEOUT_US)
         g_receive_timeout_us = ECAT_MIN_RECEIVE_TIMEOUT_US;
     plugin_logger_info(&g_logger, "Receive timeout: %d us (cycle_time=%d us)",
@@ -213,16 +213,26 @@ void stop_loop(void)
 
     plugin_logger_info(&g_logger, "Stopping EtherCAT master...");
 
-    /* Log final diagnostics (covers the current reporting window only,
-     * since accumulators are reset every ECAT_DIAG_REPORT_INTERVAL cycles) */
-    if (g_diag.cycle_count > 0) {
-        uint64_t avg_us = (g_diag.sum_total_ns / g_diag.cycle_count) / 1000;
+    /* Log final diagnostics */
+    if (g_diag.cycle_count > 0 || g_diag.wkc_error_count > 0) {
+        uint64_t total_cycles = g_diag.cycle_count + g_diag.wkc_error_count;
+        uint64_t avg_us = g_diag.cycle_count > 0
+            ? (g_diag.sum_total_ns / g_diag.cycle_count) / 1000 : 0;
         plugin_logger_info(&g_logger,
-            "Final cycle stats: %llu cycles, avg=%llu us, max_total=%llu us, max_exchange=%llu us",
+            "Final cycle stats: %llu total (%llu ok, %llu errors), "
+            "avg=%llu us, max_total=%llu us, max_exchange=%llu us",
+            (unsigned long long)total_cycles,
             (unsigned long long)g_diag.cycle_count,
+            (unsigned long long)g_diag.wkc_error_count,
             (unsigned long long)avg_us,
             (unsigned long long)(g_diag.max_total_ns / 1000),
             (unsigned long long)(g_diag.max_exchange_ns / 1000));
+        if (g_diag.wkc_error_count > 0) {
+            plugin_logger_info(&g_logger,
+                "WKC error summary: %llu noframe (-1), error rate=%.1f%%",
+                (unsigned long long)g_diag.noframe_count,
+                total_cycles > 0 ? (g_diag.wkc_error_count * 100.0 / total_cycles) : 0.0);
+        }
     }
 
     memset(&g_channel_map, 0, sizeof(g_channel_map));
@@ -273,11 +283,34 @@ void cycle_start(void)
 
     if (wkc < g_expected_wkc) {
         g_consecutive_wkc_errors++;
+        g_diag.wkc_error_count++;
+        if (wkc == EC_NOFRAME)
+            g_diag.noframe_count++;
+
         if (g_consecutive_wkc_errors == 1 || (g_consecutive_wkc_errors % 100) == 0) {
             plugin_logger_warn(&g_logger,
-                "WKC error: expected %d, got %d (consecutive errors: %d)",
-                g_expected_wkc, wkc, g_consecutive_wkc_errors);
+                "WKC error: expected %d, got %d (consecutive: %d, "
+                "exchange=%llu us, timeout=%d us)",
+                g_expected_wkc, wkc, g_consecutive_wkc_errors,
+                (unsigned long long)(g_diag.exchange_ns / 1000),
+                g_receive_timeout_us);
+
+            /* Log slave states on first error of each burst */
+            if (g_consecutive_wkc_errors == 1) {
+                for (int i = 0; i < g_config.slave_count; i++) {
+                    const ec_slavet *slave =
+                        ecat_master_get_slave(g_config.slaves[i].position);
+                    if (slave) {
+                        plugin_logger_warn(&g_logger,
+                            "  Slave %d (%s): state=0x%04X, ALstatus=0x%04X",
+                            g_config.slaves[i].position,
+                            g_config.slaves[i].name,
+                            slave->state, slave->ALstatuscode);
+                    }
+                }
+            }
         }
+
         if (g_config.master.watchdog_timeout_cycles > 0 &&
             g_consecutive_wkc_errors >= g_config.master.watchdog_timeout_cycles) {
             if (g_consecutive_wkc_errors == g_config.master.watchdog_timeout_cycles) {
@@ -337,21 +370,29 @@ void cycle_end(void)
 
     /* Periodic diagnostics report */
     if ((g_diag.cycle_count % ECAT_DIAG_REPORT_INTERVAL) == 0) {
+        uint64_t total_cycles = g_diag.cycle_count + g_diag.wkc_error_count;
         uint64_t avg_us = (g_diag.sum_total_ns / g_diag.cycle_count) / 1000;
         plugin_logger_info(&g_logger,
-            "Cycle stats (last %llu): avg=%llu us, max_total=%llu us, "
+            "Cycle stats (%llu total): avg=%llu us, max_total=%llu us, "
             "max_exchange=%llu us, last=[exch=%llu us, rd=%llu us, wr=%llu us]",
-            (unsigned long long)g_diag.cycle_count,
+            (unsigned long long)total_cycles,
             (unsigned long long)avg_us,
             (unsigned long long)(g_diag.max_total_ns / 1000),
             (unsigned long long)(g_diag.max_exchange_ns / 1000),
             (unsigned long long)(g_diag.exchange_ns / 1000),
             (unsigned long long)(g_diag.io_read_ns / 1000),
             (unsigned long long)(g_diag.io_write_ns / 1000));
+        plugin_logger_info(&g_logger,
+            "WKC errors: %llu total, %llu noframe (-1), error rate=%.1f%%",
+            (unsigned long long)g_diag.wkc_error_count,
+            (unsigned long long)g_diag.noframe_count,
+            total_cycles > 0 ? (g_diag.wkc_error_count * 100.0 / total_cycles) : 0.0);
 
         /* Reset accumulators to prevent uint64_t overflow on long runs */
         g_diag.sum_total_ns = 0;
         g_diag.cycle_count = 0;
+        g_diag.wkc_error_count = 0;
+        g_diag.noframe_count = 0;
         g_diag.max_exchange_ns = 0;
         g_diag.max_total_ns = 0;
     }
@@ -483,7 +524,7 @@ int execute_command(const char *command_json, char *response, size_t response_si
     if (strcmp(cmd->valuestring, "scan") == 0) {
         result = handle_scan_command(root, response, response_size);
     } else {
-        snprintf(response, response_size, "{\"error\":\"unknown command\"}");
+        snprintf(response, response_size, "{\"error\":\"unknown command '%s'\"}", cmd->valuestring);
     }
 
     cJSON_Delete(root);

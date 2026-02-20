@@ -117,6 +117,7 @@ typedef struct {
 typedef struct {
     char             interface[32];
     int              cycle_time_us;
+    int              receive_timeout_us;
     int              watchdog_timeout_cycles;
     char             log_level[8];
 } ecat_master_config_t;
