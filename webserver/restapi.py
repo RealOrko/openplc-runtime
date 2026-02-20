@@ -1,7 +1,6 @@
 import os
 from typing import Callable, Optional
 
-from flasgger import Swagger
 from flask import Blueprint, Flask, jsonify, request
 from flask_jwt_extended import (
     JWTManager,
@@ -26,44 +25,6 @@ if env == "production":
     app_restapi.config.from_object(webserver.config.ProdConfig)
 else:
     app_restapi.config.from_object(webserver.config.DevConfig)
-
-# Swagger 2.0 configuration
-swagger_template = {
-    "swagger": "2.0",
-    "info": {
-        "title": "OpenPLC Runtime API",
-        "description": "REST API for OpenPLC Runtime v4",
-        "version": "4.0.0",
-    },
-    "host": "localhost:8443",
-    "basePath": "/api",
-    "schemes": ["https"],
-    "consumes": ["application/json"],
-    "produces": ["application/json"],
-    "securityDefinitions": {
-        "BearerAuth": {
-            "type": "apiKey",
-            "name": "Authorization",
-            "in": "header",
-            "description": "JWT token. Format: Bearer <token>",
-        }
-    },
-}
-
-swagger_config = {
-    "headers": [],
-    "specs": [
-        {
-            "endpoint": "apispec",
-            "route": "/api/docs/apispec.json",
-        }
-    ],
-    "static_url_path": "/flasgger_static",
-    "swagger_ui": True,
-    "specs_route": "/api/docs/",
-}
-
-swagger = Swagger(app_restapi, template=swagger_template, config=swagger_config)
 
 restapi_bp = Blueprint("restapi_blueprint", __name__)
 _handler_callback_get: Optional[Callable[[str, dict], dict]] = None

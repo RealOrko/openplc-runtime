@@ -10,6 +10,8 @@
  * Phase 2: Process data exchange in cycle_start/cycle_end
  */
 
+#include <ctype.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,6 +34,9 @@
 
 /** Number of cycles between diagnostic log reports */
 #define ECAT_DIAG_REPORT_INTERVAL 10000
+
+/** Minimum timeout for receive in microseconds */
+#define ECAT_MIN_RECEIVE_TIMEOUT_US 200
 
 typedef struct {
     uint64_t cycle_count;         /* total cycles executed              */
@@ -59,7 +64,9 @@ static inline uint64_t timespec_to_ns(const ec_timet *ts)
  */
 static inline uint64_t elapsed_ns(const ec_timet *start, const ec_timet *end)
 {
-    return timespec_to_ns(end) - timespec_to_ns(start);
+    uint64_t s = timespec_to_ns(start);
+    uint64_t e = timespec_to_ns(end);
+    return (e > s) ? (e - s) : 0;
 }
 
 /*
@@ -70,8 +77,8 @@ static inline uint64_t elapsed_ns(const ec_timet *start, const ec_timet *end)
 static plugin_logger_t g_logger;
 static plugin_runtime_args_t g_runtime_args;
 static ecat_config_t g_config;
-static bool g_initialized = false;
-static bool g_running = false;
+static _Atomic(bool) g_initialized = false;
+static _Atomic(bool) g_running = false;
 static ecat_channel_map_t g_channel_map;
 static int g_consecutive_wkc_errors = 0;
 static int g_expected_wkc = 0;
@@ -181,7 +188,10 @@ void start_loop(void)
     plugin_logger_info(&g_logger, "Expected WKC: %d", g_expected_wkc);
 
     g_receive_timeout_us = g_config.master.receive_timeout_us;
-    plugin_logger_info(&g_logger, "Receive timeout: %d us", g_receive_timeout_us);
+    if (g_receive_timeout_us < ECAT_MIN_RECEIVE_TIMEOUT_US)
+        g_receive_timeout_us = ECAT_MIN_RECEIVE_TIMEOUT_US;
+    plugin_logger_info(&g_logger, "Receive timeout: %d us (cycle_time=%d us)",
+                       g_receive_timeout_us, g_config.master.cycle_time_us);
 
     /* Reset cycle state */
     g_consecutive_wkc_errors = 0;
@@ -377,6 +387,14 @@ void cycle_end(void)
             (unsigned long long)g_diag.wkc_error_count,
             (unsigned long long)g_diag.noframe_count,
             total_cycles > 0 ? (g_diag.wkc_error_count * 100.0 / total_cycles) : 0.0);
+
+        /* Reset accumulators to prevent uint64_t overflow on long runs */
+        g_diag.sum_total_ns = 0;
+        g_diag.cycle_count = 0;
+        g_diag.wkc_error_count = 0;
+        g_diag.noframe_count = 0;
+        g_diag.max_exchange_ns = 0;
+        g_diag.max_total_ns = 0;
     }
 }
 
@@ -400,6 +418,25 @@ static int handle_scan_command(cJSON *root, char *response, size_t response_size
     if (!iface || !cJSON_IsString(iface)) {
         snprintf(response, response_size, "{\"error\":\"missing 'interface' param\"}");
         return -1;
+    }
+
+    /* Validate interface name (mirrors _validate_interface_name in Python) */
+    const char *ifname = iface->valuestring;
+    size_t ifname_len = strlen(ifname);
+    if (ifname_len == 0 || ifname_len > 15) { /* IFNAMSIZ - 1 */
+        snprintf(response, response_size, "{\"error\":\"invalid interface name length\"}");
+        return -1;
+    }
+    if (!isalpha((unsigned char)ifname[0])) {
+        snprintf(response, response_size, "{\"error\":\"invalid interface name format\"}");
+        return -1;
+    }
+    for (size_t i = 0; i < ifname_len; i++) {
+        unsigned char c = (unsigned char)ifname[i];
+        if (!isalnum(c) && c != '_' && c != '-') {
+            snprintf(response, response_size, "{\"error\":\"invalid interface name format\"}");
+            return -1;
+        }
     }
 
     /* Refuse scan while master is actively running on the bus */
