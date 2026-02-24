@@ -204,20 +204,21 @@ static int calculate_iomap_offset(const ec_slavet *soem_slave,
 static const char *ecat_data_type_name(ecat_data_type_t dt)
 {
     switch (dt) {
-    case ECAT_DTYPE_BOOL:   return "BOOL";
-    case ECAT_DTYPE_INT8:   return "INT8";
-    case ECAT_DTYPE_UINT8:  return "UINT8";
-    case ECAT_DTYPE_INT16:  return "INT16";
-    case ECAT_DTYPE_UINT16: return "UINT16";
-    case ECAT_DTYPE_INT32:  return "INT32";
-    case ECAT_DTYPE_UINT32: return "UINT32";
-    case ECAT_DTYPE_INT64:  return "INT64";
-    case ECAT_DTYPE_UINT64: return "UINT64";
-    case ECAT_DTYPE_REAL32: return "REAL32";
-    case ECAT_DTYPE_REAL64: return "REAL64";
-    case ECAT_DTYPE_PAD:    return "PAD";
-    default:                return "UNKNOWN";
+    case ECAT_DTYPE_UNKNOWN: return "UNKNOWN";
+    case ECAT_DTYPE_BOOL:    return "BOOL";
+    case ECAT_DTYPE_INT8:    return "INT8";
+    case ECAT_DTYPE_UINT8:   return "UINT8";
+    case ECAT_DTYPE_INT16:   return "INT16";
+    case ECAT_DTYPE_UINT16:  return "UINT16";
+    case ECAT_DTYPE_INT32:   return "INT32";
+    case ECAT_DTYPE_UINT32:  return "UINT32";
+    case ECAT_DTYPE_INT64:   return "INT64";
+    case ECAT_DTYPE_UINT64:  return "UINT64";
+    case ECAT_DTYPE_REAL32:  return "REAL32";
+    case ECAT_DTYPE_REAL64:  return "REAL64";
+    case ECAT_DTYPE_PAD:     return "PAD";
     }
+    return "UNKNOWN";
 }
 
 /**
@@ -236,8 +237,10 @@ static int ecat_data_type_expected_iec_size(ecat_data_type_t dt)
     case ECAT_DTYPE_REAL32:                        return (int)IEC_SIZE_DWORD;
     case ECAT_DTYPE_INT64:  case ECAT_DTYPE_UINT64:
     case ECAT_DTYPE_REAL64:                        return (int)IEC_SIZE_LWORD;
-    default:                                       return -1;
+    case ECAT_DTYPE_UNKNOWN:
+    case ECAT_DTYPE_PAD:                           return -1;
     }
+    return -1;
 }
 
 /**
@@ -251,8 +254,8 @@ static const char *iec_size_name(iec_size_t sz)
     case IEC_SIZE_WORD:  return "WORD (W)";
     case IEC_SIZE_DWORD: return "DWORD (D)";
     case IEC_SIZE_LWORD: return "LWORD (L)";
-    default:             return "?";
     }
+    return "?";
 }
 
 /*
