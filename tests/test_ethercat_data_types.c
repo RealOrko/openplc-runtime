@@ -9,6 +9,8 @@
 #include "ethercat_config.h"
 #include "unity.h"
 
+TEST_SOURCE_FILE("core/src/drivers/plugins/native/ethercat/cjson/cJSON.c")
+
 void setUp(void) {}
 void tearDown(void) {}
 
