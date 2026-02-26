@@ -63,9 +63,10 @@ typedef struct {
     uint8_t  bit_length;       /* channel width in bits                  */
 
     /* PLC side */
-    iec_size_t size;           /* IEC size qualifier                     */
-    int        byte_index;     /* byte index into PLC buffer             */
-    int        bit_index;      /* bit index (IEC_SIZE_BIT only, else -1) */
+    iec_size_t      size;      /* IEC size qualifier                     */
+    int             byte_index;/* byte index into PLC buffer             */
+    int             bit_index; /* bit index (IEC_SIZE_BIT only, else -1) */
+    ecat_data_type_t data_type;/* CoE data type from the PDO entry       */
 } ecat_channel_map_entry_t;
 
 /**

@@ -22,6 +22,29 @@
 #define ECAT_MAX_NAME_LEN    64
 #define ECAT_MAX_IEC_LOC_LEN 16
 
+/**
+ * @brief Recognized EtherCAT/CoE data types
+ *
+ * Covers integer, floating-point, and padding types found in PDO entries.
+ * REAL32 and REAL64 are transported through the existing DWORD/LWORD buffers
+ * (IEEE 754 bit patterns preserved by memcpy).
+ */
+typedef enum {
+    ECAT_DTYPE_UNKNOWN,
+    ECAT_DTYPE_BOOL,
+    ECAT_DTYPE_INT8,
+    ECAT_DTYPE_UINT8,
+    ECAT_DTYPE_INT16,
+    ECAT_DTYPE_UINT16,
+    ECAT_DTYPE_INT32,
+    ECAT_DTYPE_UINT32,
+    ECAT_DTYPE_INT64,
+    ECAT_DTYPE_UINT64,
+    ECAT_DTYPE_REAL32,
+    ECAT_DTYPE_REAL64,
+    ECAT_DTYPE_PAD
+} ecat_data_type_t;
+
 /* Error codes */
 #define ECAT_CONFIG_OK              0
 #define ECAT_CONFIG_ERR_FILE       -1
@@ -37,11 +60,12 @@
  * Entries with index "0x0000" are padding entries.
  */
 typedef struct {
-    char     index[12];        /* hex string e.g. "0x6000" */
-    uint8_t  subindex;
-    uint8_t  bit_length;
-    char     name[ECAT_MAX_NAME_LEN];
-    char     data_type[12];    /* "BOOL", "INT16", "PAD", etc. */
+    char             index[12];        /* hex string e.g. "0x6000" */
+    uint8_t          subindex;
+    uint8_t          bit_length;
+    char             name[ECAT_MAX_NAME_LEN];
+    char             data_type[12];    /* "BOOL", "INT16", "REAL", etc. */
+    ecat_data_type_t parsed_type;      /* enum resolved from data_type string */
 } ecat_pdo_entry_t;
 
 /**
@@ -178,5 +202,19 @@ int ecat_config_validate(const ecat_config_t *config);
  * @param config Configuration structure to initialize
  */
 void ecat_config_init_defaults(ecat_config_t *config);
+
+/**
+ * @brief Parse a data type string into the corresponding enum value
+ *
+ * Recognizes standard CoE/EtherCAT type names and common aliases:
+ *   "BOOL", "INT8"/"SINT", "UINT8"/"USINT", "INT16"/"INT",
+ *   "UINT16"/"UINT", "INT32"/"DINT", "UINT32"/"UDINT",
+ *   "INT64"/"LINT", "UINT64"/"ULINT",
+ *   "REAL"/"REAL32"/"FLOAT", "LREAL"/"REAL64"/"DOUBLE", "PAD"
+ *
+ * @param str  NUL-terminated data type string (case-insensitive)
+ * @return Matching ecat_data_type_t, or ECAT_DTYPE_UNKNOWN if unrecognized
+ */
+ecat_data_type_t ecat_parse_data_type(const char *str);
 
 #endif /* ETHERCAT_CONFIG_H */
