@@ -77,6 +77,6 @@ gcc $FLAGS -I "core/src/plc_app" -c "$PYTHON_LOADER_SRC" -o "$BUILD_PATH/python_
 
 # Link shared library into build/
 echo "[INFO] Linking shared library..."
-g++ $FLAGS $LINK_FLAGS -shared -o "$BUILD_PATH/new_libplc.so" "$BUILD_PATH/Config0.o" \
+g++ $FLAGS -shared -o "$BUILD_PATH/new_libplc.so" "$BUILD_PATH/Config0.o" \
     "$BUILD_PATH/Res0.o" "$BUILD_PATH/debug.o" "$BUILD_PATH/glueVars.o" \
-    "$BUILD_PATH/c_blocks_code.o" "$BUILD_PATH/python_loader.o" -lpthread -lrt
+    "$BUILD_PATH/c_blocks_code.o" "$BUILD_PATH/python_loader.o" $LINK_FLAGS -lpthread -lrt
