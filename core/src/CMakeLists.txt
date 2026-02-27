@@ -54,15 +54,8 @@ target_link_libraries(plc_main
 )
 
 # Export symbols from the executable so that dlopen'd PLC shared libraries
-# can resolve functions provided by the runtime (e.g. TCP communication blocks).
-# On Linux, -rdynamic adds symbols to the dynamic table for dlopen resolution.
-# On Cygwin/MSYS2, -rdynamic maps to --export-all-symbols, but the PLC shared
-# library also needs an import library to link against at compile time.
+# can resolve functions provided by the runtime (e.g. TCP communication blocks)
 target_link_options(plc_main PRIVATE -rdynamic)
-if(CMAKE_SYSTEM_NAME MATCHES "CYGWIN|MSYS")
-    target_link_options(plc_main PRIVATE
-        -Wl,--out-implib,${CMAKE_BINARY_DIR}/libplc_main.a)
-endif()
 
 # Ensure executable can find shared library at runtime
 set_target_properties(plc_main PROPERTIES
