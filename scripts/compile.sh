@@ -46,33 +46,23 @@ if [ ! -d "$BUILD_PATH" ]; then
     exit 1
 fi
 
-# On Cygwin/MSYS2, the PE loader cannot resolve symbols from the running
-# executable at dlopen time (unlike Linux where -rdynamic handles this). We must
-# compile runtime-provided functions (e.g. TCP communication blocks) directly
-# into the PLC shared library. A minimal log_error stub is provided since the
-# full log.c depends on plc_main internals (unix socket, keep_running signal).
+# On Cygwin/MSYS2, TCP/UDP communication blocks are not supported (the PE
+# loader cannot resolve symbols from the host executable at dlopen time).
+# Provide no-op stubs so programs using these blocks still compile and run
+# — the blocks simply return -1 (failure) for every operation.
 EXTRA_OBJS=""
 case "$(uname -s)" in
     CYGWIN*|MSYS*|MINGW*)
-        TCP_SRC="core/src/plc_app/client_tcp_udp.c"
-        if [ -f "$TCP_SRC" ]; then
-            echo "[INFO] Compiling runtime communication functions for MSYS2/Cygwin..."
-            cat > "$BUILD_PATH/log_stub.c" << 'STUB'
-#include <stdio.h>
-#include <stdarg.h>
-void log_error(const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    fprintf(stderr, "[ERROR] ");
-    vfprintf(stderr, fmt, args);
-    fprintf(stderr, "\n");
-    va_end(args);
-}
+        cat > "$BUILD_PATH/comm_stubs.c" << 'STUB'
+#include <stdint.h>
+#include <stddef.h>
+int connect_to_tcp_server(uint8_t *a, uint16_t b, int c) { (void)a; (void)b; (void)c; return -1; }
+int send_tcp_message(uint8_t *a, size_t b, int c) { (void)a; (void)b; (void)c; return -1; }
+int receive_tcp_message(uint8_t *a, size_t b, int c) { (void)a; (void)b; (void)c; return -1; }
+int close_tcp_connection(int a) { (void)a; return -1; }
 STUB
-            gcc $FLAGS -I "core/src/plc_app" -c "$TCP_SRC" -o "$BUILD_PATH/client_tcp_udp.o"
-            gcc $FLAGS -c "$BUILD_PATH/log_stub.c" -o "$BUILD_PATH/log_stub.o"
-            EXTRA_OBJS="$BUILD_PATH/client_tcp_udp.o $BUILD_PATH/log_stub.o"
-        fi
+        gcc $FLAGS -c "$BUILD_PATH/comm_stubs.c" -o "$BUILD_PATH/comm_stubs.o"
+        EXTRA_OBJS="$BUILD_PATH/comm_stubs.o"
         ;;
 esac
 
