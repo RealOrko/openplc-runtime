@@ -13,6 +13,7 @@
 #include "ethercat_master.h"
 #include "soem/soem.h"
 
+#include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
