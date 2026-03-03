@@ -8,12 +8,18 @@
  * expected configuration, and manages process data exchange with slaves.
  *
  * Plugin lifecycle:
- *   init()        -> Load config, initialize logger
- *   start_loop()  -> Initialize SOEM master, validate topology
- *   cycle_start() -> Read inputs from slaves (Phase 2)
- *   cycle_end()   -> Write outputs to slaves (Phase 2)
- *   stop_loop()   -> Transition slaves to INIT, close master
+ *   init()        -> Load config, initialize logger [state: IDLE]
+ *   start_loop()  -> Scan bus, write SDOs, map PDOs, transition to OP,
+ *                    start independent EtherCAT cycle thread [state: OPERATIONAL]
+ *   cycle_start() -> Copy shadow buffer inputs to PLC buffers
+ *   cycle_end()   -> Copy PLC buffers to shadow buffer outputs
+ *   stop_loop()   -> Join cycle thread, close master [state: STOPPED]
  *   cleanup()     -> Free resources
+ *
+ * State machine: STOPPED -> IDLE -> SCANNING -> CONFIGURING ->
+ *                TRANSITIONING -> OPERATIONAL <-> RECOVERING -> ERROR
+ *
+ * Commands: "scan", "status", "diagnostics"
  */
 
 #ifndef ETHERCAT_PLUGIN_H
@@ -52,26 +58,28 @@ void cleanup(void);
 /**
  * @brief Called at the start of each PLC scan cycle
  *
- * Phase 1: Stub (no-op)
- * Phase 2: Will read process inputs from slaves
+ * Copies input data from the shadow IOmap into PLC input buffers.
+ * The actual bus exchange happens in the independent EtherCAT cycle thread.
  */
 void cycle_start(void);
 
 /**
  * @brief Called at the end of each PLC scan cycle
  *
- * Phase 1: Stub (no-op)
- * Phase 2: Will write process outputs to slaves
+ * Copies PLC output buffers into the shadow IOmap.
+ * The actual bus exchange happens in the independent EtherCAT cycle thread.
  */
 void cycle_end(void);
 
 /**
- * @brief Execute an async command (e.g., network scan)
+ * @brief Execute an async command
  *
- * Commands are routed from the unix socket via plugin_driver_execute_command().
- * Uses a temporary SOEM context (not the master's g_ecx_context).
+ * Supported commands:
+ *   - "scan": Scan bus for slaves (uses temporary SOEM context)
+ *   - "status": Return current master/slave status snapshot
+ *   - "diagnostics": Return detailed timing and recovery diagnostics
  *
- * @param command_json JSON string with "command" and "params" fields
+ * @param command_json JSON string with "command" and optional "params" fields
  * @param response Buffer for JSON response
  * @param response_size Size of response buffer
  * @return 0 on success, -1 on error

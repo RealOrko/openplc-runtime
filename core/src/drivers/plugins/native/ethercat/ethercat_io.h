@@ -55,11 +55,13 @@ typedef struct {
  * @brief Single entry in the channel map
  *
  * Ties one PDO entry (IOmap side) to one PLC buffer position.
+ * Uses an offset relative to the IOmap base instead of an absolute pointer,
+ * allowing the same map to work with both the real IOmap and a shadow buffer.
  */
 typedef struct {
     /* IOmap side */
-    uint8_t *iomap_ptr;        /* pointer into the SOEM IOmap buffer     */
-    int      iomap_bit_offset; /* bit offset within *iomap_ptr (0-7)     */
+    size_t   iomap_offset;     /* byte offset from IOmap base            */
+    int      iomap_bit_offset; /* bit offset within the byte (0-7)       */
     uint8_t  bit_length;       /* channel width in bits                  */
 
     /* PLC side */
@@ -116,22 +118,30 @@ int ecat_io_build_channel_map(const ecat_config_t *config,
  * @brief Copy inputs from IOmap into PLC input buffers
  *
  * Called from cycle_start() after process data has been received.
+ * The iomap_base parameter allows reading from either the real SOEM IOmap
+ * or a shadow buffer, enabling decoupled EtherCAT and PLC cycles.
  *
- * @param map   Channel map built by ecat_io_build_channel_map()
- * @param args  Runtime args with PLC buffer pointers
+ * @param map        Channel map built by ecat_io_build_channel_map()
+ * @param iomap_base Base pointer of the IOmap buffer to read from
+ * @param args       Runtime args with PLC buffer pointers
  */
 void ecat_io_read_inputs(const ecat_channel_map_t *map,
+                         const uint8_t *iomap_base,
                          plugin_runtime_args_t *args);
 
 /**
  * @brief Copy PLC output buffers into IOmap
  *
  * Called from cycle_end() before the next process data send.
+ * The iomap_base parameter allows writing to either the real SOEM IOmap
+ * or a shadow buffer, enabling decoupled EtherCAT and PLC cycles.
  *
- * @param map   Channel map built by ecat_io_build_channel_map()
- * @param args  Runtime args with PLC buffer pointers
+ * @param map        Channel map built by ecat_io_build_channel_map()
+ * @param iomap_base Base pointer of the IOmap buffer to write to
+ * @param args       Runtime args with PLC buffer pointers
  */
 void ecat_io_write_outputs(const ecat_channel_map_t *map,
+                           uint8_t *iomap_base,
                            plugin_runtime_args_t *args);
 
 #endif /* ETHERCAT_IO_H */

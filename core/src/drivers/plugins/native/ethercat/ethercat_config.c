@@ -562,3 +562,44 @@ int ecat_config_validate(const ecat_config_t *config)
 
     return ECAT_CONFIG_OK;
 }
+
+/*
+ * =============================================================================
+ * State Machine and Data Type Helpers
+ * =============================================================================
+ */
+
+const char *ecat_state_to_string(ecat_plugin_state_t state)
+{
+    switch (state) {
+    case ECAT_STATE_IDLE:          return "IDLE";
+    case ECAT_STATE_SCANNING:      return "SCANNING";
+    case ECAT_STATE_CONFIGURING:   return "CONFIGURING";
+    case ECAT_STATE_TRANSITIONING: return "TRANSITIONING";
+    case ECAT_STATE_OPERATIONAL:   return "OPERATIONAL";
+    case ECAT_STATE_RECOVERING:    return "RECOVERING";
+    case ECAT_STATE_ERROR:         return "ERROR";
+    case ECAT_STATE_STOPPED:       return "STOPPED";
+    }
+    return "UNKNOWN";
+}
+
+int ecat_data_type_size(ecat_data_type_t dt)
+{
+    switch (dt) {
+    case ECAT_DTYPE_BOOL:    return 1;
+    case ECAT_DTYPE_INT8:    return 1;
+    case ECAT_DTYPE_UINT8:   return 1;
+    case ECAT_DTYPE_INT16:   return 2;
+    case ECAT_DTYPE_UINT16:  return 2;
+    case ECAT_DTYPE_INT32:   return 4;
+    case ECAT_DTYPE_UINT32:  return 4;
+    case ECAT_DTYPE_INT64:   return 8;
+    case ECAT_DTYPE_UINT64:  return 8;
+    case ECAT_DTYPE_REAL32:  return 4;
+    case ECAT_DTYPE_REAL64:  return 8;
+    case ECAT_DTYPE_UNKNOWN: return 0;
+    case ECAT_DTYPE_PAD:     return 0;
+    }
+    return 0;
+}
