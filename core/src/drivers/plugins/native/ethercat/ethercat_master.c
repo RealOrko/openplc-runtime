@@ -204,25 +204,49 @@ int ecat_master_write_sdos(int slave_pos, const ecat_sdo_config_t *sdos,
         uint16_t index = (uint16_t)strtol(sdo->index, NULL, 16);
 
         /* Determine data size from data type */
-        ecat_data_type_t dt = ecat_parse_data_type(sdo->data_type);
+        ecat_data_type_t dt = sdo->parsed_type;
         int size = ecat_data_type_size(dt);
         if (size <= 0) {
             plugin_logger_warn(logger,
                 "Slave %d SDO 0x%04X:%d: unknown data type '%s', assuming 4 bytes",
                 slave_pos, index, sdo->subindex, sdo->data_type);
             size = 4;
+            dt = ECAT_DTYPE_INT32;
         }
 
-        /* Prepare value buffer (little-endian, matching EtherCAT wire format) */
-        int32_t value = sdo->value;
+        /* Encode the double value into the correct wire type */
+        uint8_t value_buf[8];
+        memset(value_buf, 0, sizeof(value_buf));
 
-        plugin_logger_debug(logger,
-            "Slave %d: writing SDO 0x%04X:%d = %d (%s, %d bytes)",
-            slave_pos, index, sdo->subindex, value, sdo->data_type, size);
+        switch (dt) {
+        case ECAT_DTYPE_BOOL:
+        case ECAT_DTYPE_UINT8:  { uint8_t  v = (uint8_t)sdo->value;  memcpy(value_buf, &v, sizeof(v)); break; }
+        case ECAT_DTYPE_INT8:   { int8_t   v = (int8_t)sdo->value;   memcpy(value_buf, &v, sizeof(v)); break; }
+        case ECAT_DTYPE_UINT16: { uint16_t v = (uint16_t)sdo->value; memcpy(value_buf, &v, sizeof(v)); break; }
+        case ECAT_DTYPE_INT16:  { int16_t  v = (int16_t)sdo->value;  memcpy(value_buf, &v, sizeof(v)); break; }
+        case ECAT_DTYPE_UINT32: { uint32_t v = (uint32_t)sdo->value; memcpy(value_buf, &v, sizeof(v)); break; }
+        case ECAT_DTYPE_INT32:  { int32_t  v = (int32_t)sdo->value;  memcpy(value_buf, &v, sizeof(v)); break; }
+        case ECAT_DTYPE_UINT64: { uint64_t v = (uint64_t)sdo->value; memcpy(value_buf, &v, sizeof(v)); break; }
+        case ECAT_DTYPE_INT64:  { int64_t  v = (int64_t)sdo->value;  memcpy(value_buf, &v, sizeof(v)); break; }
+        case ECAT_DTYPE_REAL32: { float    v = (float)sdo->value;    memcpy(value_buf, &v, sizeof(v)); break; }
+        case ECAT_DTYPE_REAL64: { double   v = sdo->value;           memcpy(value_buf, &v, sizeof(v)); break; }
+        default:                { int32_t  v = (int32_t)sdo->value;  memcpy(value_buf, &v, sizeof(v)); break; }
+        }
+
+        if (dt == ECAT_DTYPE_REAL32 || dt == ECAT_DTYPE_REAL64) {
+            plugin_logger_debug(logger,
+                "Slave %d: writing SDO 0x%04X:%d = %g (%s, %d bytes)",
+                slave_pos, index, sdo->subindex, sdo->value, sdo->data_type, size);
+        } else {
+            plugin_logger_debug(logger,
+                "Slave %d: writing SDO 0x%04X:%d = %lld (%s, %d bytes)",
+                slave_pos, index, sdo->subindex, (long long)(int64_t)sdo->value,
+                sdo->data_type, size);
+        }
 
         int wkc = ecx_SDOwrite(&g_ecx_context, (uint16)slave_pos,
                                 index, sdo->subindex,
-                                FALSE, size, &value, EC_TIMEOUTRXM);
+                                FALSE, size, value_buf, EC_TIMEOUTRXM);
 
         if (wkc <= 0) {
             plugin_logger_warn(logger,

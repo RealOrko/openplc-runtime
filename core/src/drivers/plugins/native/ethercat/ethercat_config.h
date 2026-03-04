@@ -88,11 +88,12 @@ typedef struct {
  * to a slave during configuration phase.
  */
 typedef struct {
-    char     index[12];        /* hex string e.g. "0x8000" */
-    uint8_t  subindex;
-    int32_t  value;
-    char     data_type[12];
-    char     name[ECAT_MAX_NAME_LEN];
+    char             index[12];        /* hex string e.g. "0x8000" */
+    uint8_t          subindex;
+    double           value;            /* stored as double; cast to target type at write time */
+    char             data_type[12];
+    ecat_data_type_t parsed_type;      /* enum resolved from data_type string */
+    char             name[ECAT_MAX_NAME_LEN];
 } ecat_sdo_config_t;
 
 /**
