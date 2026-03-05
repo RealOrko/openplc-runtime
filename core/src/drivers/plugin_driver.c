@@ -535,59 +535,6 @@ int plugin_driver_stop(plugin_driver_t *driver)
     return 0;
 }
 
-int plugin_driver_restart(plugin_driver_t *driver)
-{
-    if (!driver)
-    {
-        return -1;
-    }
-
-    log_info("Restarting all plugins...");
-
-    // Stop all running plugins first
-    if (plugin_driver_stop(driver) != 0)
-    {
-        log_error("Failed to stop plugins during restart");
-        return -1;
-    }
-
-    // Clean up plugins without destroying the driver
-    // Note: No need for GIL here as stop() already handled Python operations
-    if (has_python_plugin && Py_IsInitialized())
-    {
-        gstate = PyGILState_Ensure();
-        for (int i = 0; i < driver->plugin_count; i++)
-        {
-            plugin_instance_t *plugin = &driver->plugins[i];
-            if (plugin->python_plugin)
-            {
-                python_plugin_cleanup(plugin);
-            }
-        }
-        PyGILState_Release(gstate);
-    }
-
-    // CRITICAL: Reload configuration from plugins.conf file
-    log_info("Reloading plugin configuration...");
-    if (plugin_driver_load_config(driver, "plugins.conf") != 0)
-    {
-        log_error("Failed to reload plugin configuration during restart");
-        return -1;
-    }
-
-    // Reinitialize all plugins
-    if (plugin_driver_init(driver) != 0)
-    {
-        log_error("Failed to reinitialize plugins during restart");
-        return -1;
-    }
-
-    // Do NOT start plugins here. They will be started by plc_cycle_thread()
-    // after image tables are populated, ensuring no NULL buffer access.
-    log_info("All plugins reinitialized (start deferred to plc_cycle_thread)");
-    return 0;
-}
-
 void plugin_driver_destroy(plugin_driver_t *driver)
 {
     if (!driver)

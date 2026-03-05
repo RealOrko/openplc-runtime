@@ -59,7 +59,6 @@ int plugin_driver_update_config(plugin_driver_t *driver, const char *config_file
 int plugin_driver_init(plugin_driver_t *driver);
 int plugin_driver_start(plugin_driver_t *driver);
 int plugin_driver_stop(plugin_driver_t *driver);
-int plugin_driver_restart(plugin_driver_t *driver);
 void plugin_driver_destroy(plugin_driver_t *driver);
 int plugin_mutex_take(pthread_mutex_t *mutex);
 int plugin_mutex_give(pthread_mutex_t *mutex);
