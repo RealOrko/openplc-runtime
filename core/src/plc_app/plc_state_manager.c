@@ -28,6 +28,7 @@ extern plugin_driver_t *plugin_driver;
 static sigjmp_buf plc_crash_jmp;
 static pthread_t plc_thread_id;
 static volatile sig_atomic_t plc_crash_signal = 0;
+static volatile sig_atomic_t holding_buffer_mutex = 0;
 
 static void plc_crash_handler(int sig)
 {
@@ -50,6 +51,7 @@ void *plc_cycle_thread(void *arg)
 
     // Record this thread's ID for the crash handler
     plc_thread_id = pthread_self();
+    plc_crash_signal = 0;
 
     // Initialize PLC with real-time optimizations
     set_realtime_priority();
@@ -122,8 +124,12 @@ void *plc_cycle_thread(void *arg)
     if (crash_sig != 0)
     {
         // We got here via siglongjmp from the crash handler.
-        // Release the buffer mutex in case we held it when we crashed.
-        plugin_mutex_give(&plugin_driver->buffer_mutex);
+        // Only release the buffer mutex if we held it when we crashed.
+        if (holding_buffer_mutex)
+        {
+            holding_buffer_mutex = 0;
+            plugin_mutex_give(&plugin_driver->buffer_mutex);
+        }
 
         const char *sig_name = (crash_sig == SIGFPE) ? "SIGFPE (arithmetic error, e.g. division by zero)"
                                                       : "SIGSEGV (memory access violation)";
@@ -147,6 +153,7 @@ void *plc_cycle_thread(void *arg)
     while (plc_state == PLC_STATE_RUNNING)
     {
         scan_cycle_time_start();
+        holding_buffer_mutex = 1;
         plugin_mutex_take(&plugin_driver->buffer_mutex);
 
         // Apply pending journal entries before plugin hooks run
@@ -167,6 +174,7 @@ void *plc_cycle_thread(void *arg)
         atomic_store(&plc_heartbeat, time(NULL));
 
         plugin_mutex_give(&plugin_driver->buffer_mutex);
+        holding_buffer_mutex = 0;
         scan_cycle_time_end();
 
         // Calculate next start time
@@ -392,6 +400,14 @@ void plc_state_manager_cleanup(void)
     {
         unload_plc_program(plc_program);
     }
+}
+
+void plc_force_error_state(void)
+{
+    pthread_mutex_lock(&state_mutex);
+    plc_state = PLC_STATE_ERROR;
+    pthread_mutex_unlock(&state_mutex);
+    log_info("PLC State: ERROR");
 }
 
 int plc_get_crash_signal(void)

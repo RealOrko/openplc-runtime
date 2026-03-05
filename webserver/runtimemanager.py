@@ -39,6 +39,7 @@ class RuntimeManager:
         self.runtime_socket = SyncUnixClient(plc_socket)
         self.monitor_thread = threading.Thread(target=self._monitor, daemon=True)
         self.running = False
+        self._crash_lock = threading.Lock()
         self._crash_times: list[float] = []
         self._safe_mode = False
 
@@ -183,13 +184,14 @@ class RuntimeManager:
         time.sleep(1)  # Give time to start
         self._safe_connect_runtime_socket()
 
-    def _should_enter_safe_mode(self):
-        """Check if recent crashes warrant entering safe mode."""
-        now = time.time()
-        # Keep only crashes within the time window
-        self._crash_times = [t for t in self._crash_times if now - t < RAPID_CRASH_WINDOW]
-        self._crash_times.append(now)
-        return len(self._crash_times) >= MAX_RAPID_CRASHES
+    def _record_crash_and_check_safe_mode(self):
+        """Record a crash timestamp and check if safe mode should be entered."""
+        with self._crash_lock:
+            now = time.time()
+            # Keep only crashes within the time window
+            self._crash_times = [t for t in self._crash_times if now - t < RAPID_CRASH_WINDOW]
+            self._crash_times.append(now)
+            return len(self._crash_times) >= MAX_RAPID_CRASHES
 
     def _monitor(self):
         """
@@ -202,17 +204,18 @@ class RuntimeManager:
                 self._safe_stop_log_server()
                 self._safe_close_runtime_socket()
 
-                if self._should_enter_safe_mode():
-                    if not self._safe_mode:
-                        logger.error(
-                            "PLC program caused %d crashes within %d seconds. "
-                            "Restarting runtime in SAFE MODE - "
-                            "PLC program will NOT be loaded. "
-                            "Upload a corrected program to recover.",
-                            MAX_RAPID_CRASHES,
-                            RAPID_CRASH_WINDOW,
-                        )
-                        self._safe_mode = True
+                if self._record_crash_and_check_safe_mode():
+                    with self._crash_lock:
+                        if not self._safe_mode:
+                            logger.error(
+                                "PLC program caused %d crashes within %d seconds. "
+                                "Restarting runtime in SAFE MODE - "
+                                "PLC program will NOT be loaded. "
+                                "Upload a corrected program to recover.",
+                                MAX_RAPID_CRASHES,
+                                RAPID_CRASH_WINDOW,
+                            )
+                            self._safe_mode = True
                     self._start_runtime_process(safe_mode=True)
                 else:
                     logger.warning("Restarting PLC runtime...")
@@ -258,8 +261,9 @@ class RuntimeManager:
 
     def reset_crash_tracking(self):
         """Reset crash tracking state after a successful program upload."""
-        self._crash_times.clear()
-        self._safe_mode = False
+        with self._crash_lock:
+            self._crash_times.clear()
+            self._safe_mode = False
 
     def get_logs(self, min_id=None, level=None):
         """

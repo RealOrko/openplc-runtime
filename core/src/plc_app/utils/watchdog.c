@@ -11,7 +11,6 @@
 #include "watchdog.h"
 
 atomic_long plc_heartbeat;
-extern PLCState plc_state;
 
 void *watchdog_thread(void *arg)
 {
@@ -22,9 +21,17 @@ void *watchdog_thread(void *arg)
     {
         sleep(2); // Watch every 2 seconds
 
-        if (plc_get_state() != PLC_STATE_RUNNING)
+        PLCState current_state = plc_get_state();
+        if (current_state != PLC_STATE_RUNNING)
         {
-            continue; // Only monitor when PLC is running
+            // Reset tracking when not running so we get a fresh
+            // baseline when the PLC starts again
+            if (current_state == PLC_STATE_ERROR)
+            {
+                last = 0;
+                atomic_store(&plc_heartbeat, 0);
+            }
+            continue;
         }
 
         long now = atomic_load(&plc_heartbeat);
@@ -37,15 +44,7 @@ void *watchdog_thread(void *arg)
             // Transition to ERROR state instead of killing the process.
             // This keeps the runtime alive so the webserver can still
             // communicate with it and upload a new program.
-            // Writing directly to plc_state is safe here because the PLC
-            // thread is unresponsive (stuck) and not contending the variable.
-            // The main loop checks plc_state each cycle and will exit.
-            plc_state = PLC_STATE_ERROR;
-            log_info("PLC State: ERROR");
-
-            // Reset heartbeat tracking for next run
-            last = 0;
-            atomic_store(&plc_heartbeat, 0);
+            plc_force_error_state();
             continue;
         }
 

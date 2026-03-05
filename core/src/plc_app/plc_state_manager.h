@@ -33,6 +33,14 @@ bool plc_set_state(PLCState new_state);
 void plc_state_manager_cleanup(void);
 
 /**
+ * @brief Force the PLC into ERROR state from any thread.
+ *
+ * This is intended for the watchdog thread to transition the PLC to ERROR
+ * state without triggering program load/unload side effects (unlike plc_set_state).
+ */
+void plc_force_error_state(void);
+
+/**
  * @brief Get the signal number that caused the last PLC crash.
  * @return The signal number (e.g. SIGFPE, SIGSEGV), or 0 if no crash occurred
  */
