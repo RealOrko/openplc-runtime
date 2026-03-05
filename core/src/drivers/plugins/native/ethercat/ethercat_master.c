@@ -170,6 +170,35 @@ int ecat_master_open_and_scan(const ecat_config_t *config, plugin_logger_t *logg
         return -1;
     }
 
+    /* Step 4: Wait for all slaves to reach PRE-OP state.
+     * ecx_config_init() requests PRE-OP but does not wait for the
+     * transition to complete. Slaves need to be in PRE-OP before
+     * mailbox communication (SDO writes) can work. */
+    plugin_logger_info(logger, "Waiting for slaves to reach PRE-OP state...");
+
+    ecx_statecheck(&g_ecx_context, 0, EC_STATE_PRE_OP, EC_TIMEOUTSTATE * 4);
+    ecx_readstate(&g_ecx_context);
+
+    int all_preop = 1;
+    for (int i = 1; i <= g_ecx_context.slavecount; i++) {
+        ec_slavet *slave = &g_ecx_context.slavelist[i];
+        if (slave->state < EC_STATE_PRE_OP) {
+            plugin_logger_error(logger,
+                "Slave %d (%s) failed to reach PRE-OP (state=0x%04X, ALstatus=0x%04X)",
+                i, slave->name, slave->state, slave->ALstatuscode);
+            all_preop = 0;
+        }
+    }
+
+    if (!all_preop) {
+        plugin_logger_error(logger, "Not all slaves reached PRE-OP - aborting");
+        ecx_close(&g_ecx_context);
+        g_soem_initialized = 0;
+        return -1;
+    }
+
+    plugin_logger_info(logger, "All slaves in PRE-OP state");
+
     return 0;
 }
 
