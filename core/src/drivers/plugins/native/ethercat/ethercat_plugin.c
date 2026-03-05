@@ -51,6 +51,43 @@
 /** IOmap size matching the master module */
 #define ECAT_IOMAP_SIZE 4096
 
+/** SCHED_FIFO priority for the EtherCAT cycle thread (below PLC thread at 20) */
+#define ECAT_THREAD_PRIORITY 15
+
+/*
+ * =============================================================================
+ * Priority-Inheriting Mutex Helper
+ * =============================================================================
+ */
+
+/**
+ * @brief Initialize a mutex with PTHREAD_PRIO_INHERIT to prevent priority inversion
+ *
+ * The PLC scan cycle thread runs at SCHED_FIFO priority. Any mutex shared
+ * with lower-priority threads must use priority inheritance so the scheduler
+ * boosts the holder when a high-priority thread is blocked.
+ */
+static int init_prio_inherit_mutex(pthread_mutex_t *mutex)
+{
+#if !defined(__CYGWIN__) && !defined(__MSYS__)
+    pthread_mutexattr_t attr;
+    if (pthread_mutexattr_init(&attr) != 0)
+        return -1;
+    if (pthread_mutexattr_setprotocol(&attr, PTHREAD_PRIO_INHERIT) != 0) {
+        pthread_mutexattr_destroy(&attr);
+        return -1;
+    }
+    if (pthread_mutex_init(mutex, &attr) != 0) {
+        pthread_mutexattr_destroy(&attr);
+        return -1;
+    }
+    pthread_mutexattr_destroy(&attr);
+    return 0;
+#else
+    return pthread_mutex_init(mutex, NULL);
+#endif
+}
+
 /*
  * =============================================================================
  * Cycle Diagnostics
@@ -165,13 +202,20 @@ static _Atomic(bool) g_thread_running = false;
 
 /* Shadow buffer for decoupling EtherCAT thread from PLC scan cycle.
  * The EtherCAT thread owns g_iomap (via ecat_master); the PLC cycle
- * reads/writes g_shadow_iomap. The mutex protects only the shadow buffer. */
+ * reads/writes g_shadow_iomap. The mutex protects only the shadow buffer.
+ * Initialized in init() with PTHREAD_PRIO_INHERIT to prevent priority
+ * inversion between the RT PLC thread and the EtherCAT thread. */
 static uint8_t g_shadow_iomap[ECAT_IOMAP_SIZE];
-static pthread_mutex_t g_shadow_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_shadow_mutex;
 
 /* Status snapshot for queries via execute_command */
 static ecat_master_status_t g_status_snapshot;
-static pthread_mutex_t g_status_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_status_mutex;
+
+/* Counter for shadow mutex trylock failures in the PLC scan cycle.
+ * Incremented by the PLC thread when trylock fails; the PLC uses stale
+ * I/O data for that cycle instead of blocking on a device-facing thread. */
+static _Atomic(uint64_t) g_shadow_lock_skips = 0;
 
 /* Diagnostics (owned by EtherCAT thread, snapshot taken periodically) */
 static ecat_cycle_diag_t g_diag;
@@ -208,6 +252,7 @@ static void update_status_snapshot(void)
     snap.max_exchange_us = g_diag.max_exchange_ns / 1000;
     snap.avg_cycle_us = g_diag.cycle_count > 0
         ? (g_diag.sum_total_ns / g_diag.cycle_count) / 1000 : 0;
+    snap.shadow_lock_skips = atomic_load(&g_shadow_lock_skips);
 
     /* Per-slave status */
     for (int i = 0; i < g_config.slave_count && i < ECAT_MAX_SLAVES; i++) {
@@ -403,6 +448,13 @@ static void *ecat_cycle_thread(void *arg)
                     total_cycles > 0
                         ? (g_diag.wkc_error_count * 100.0 / total_cycles) : 0.0);
 
+                uint64_t skips = atomic_load(&g_shadow_lock_skips);
+                if (skips > 0) {
+                    plugin_logger_info(&g_logger,
+                        "Shadow buffer lock skips: %llu (PLC used stale I/O data)",
+                        (unsigned long long)skips);
+                }
+
                 /* Reset accumulators to prevent overflow on long runs */
                 g_diag.sum_total_ns = 0;
                 g_diag.cycle_count = 0;
@@ -512,6 +564,22 @@ int init(void *args)
     memset(&g_status_snapshot, 0, sizeof(g_status_snapshot));
     memset(&g_diag, 0, sizeof(g_diag));
 
+    /* Initialize mutexes with PTHREAD_PRIO_INHERIT.
+     * The PLC scan cycle thread runs at SCHED_FIFO priority 20. Without
+     * priority inheritance, the EtherCAT thread (lower priority) holding
+     * the shadow mutex can cause priority inversion and scan cycle overruns. */
+    if (init_prio_inherit_mutex(&g_shadow_mutex) != 0) {
+        plugin_logger_error(&g_logger,
+            "Failed to init shadow mutex with priority inheritance");
+        return -1;
+    }
+    if (init_prio_inherit_mutex(&g_status_mutex) != 0) {
+        plugin_logger_error(&g_logger,
+            "Failed to init status mutex with priority inheritance");
+        pthread_mutex_destroy(&g_shadow_mutex);
+        return -1;
+    }
+
     atomic_store(&g_plugin_state, ECAT_STATE_IDLE);
     plugin_logger_info(&g_logger, "EtherCAT plugin initialized [state: IDLE]");
 
@@ -600,8 +668,37 @@ void start_loop(void)
 
     atomic_store(&g_thread_running, true);
     atomic_store(&g_plugin_state, ECAT_STATE_OPERATIONAL);
+    atomic_store(&g_shadow_lock_skips, 0);
 
-    int rc = pthread_create(&g_ecat_thread, NULL, ecat_cycle_thread, NULL);
+    /* Create EtherCAT cycle thread with RT priority.
+     * Priority is below the PLC thread (20) but above normal tasks,
+     * preventing starvation while maintaining PLC determinism.
+     * Falls back to default priority if RT scheduling is unavailable. */
+    pthread_attr_t thread_attr;
+    pthread_attr_init(&thread_attr);
+
+#if !defined(__CYGWIN__) && !defined(__MSYS__)
+    {
+        struct sched_param sched_p;
+        sched_p.sched_priority = ECAT_THREAD_PRIORITY;
+        pthread_attr_setschedpolicy(&thread_attr, SCHED_FIFO);
+        pthread_attr_setschedparam(&thread_attr, &sched_p);
+        pthread_attr_setinheritsched(&thread_attr, PTHREAD_EXPLICIT_SCHED);
+    }
+#endif
+
+    int rc = pthread_create(&g_ecat_thread, &thread_attr, ecat_cycle_thread, NULL);
+    if (rc != 0) {
+        /* RT priority may require root/CAP_SYS_NICE - retry without */
+        plugin_logger_warn(&g_logger,
+            "Failed to create EtherCAT thread with RT priority (rc=%d), "
+            "retrying with default priority", rc);
+        pthread_attr_destroy(&thread_attr);
+        pthread_attr_init(&thread_attr);
+        rc = pthread_create(&g_ecat_thread, &thread_attr, ecat_cycle_thread, NULL);
+    }
+    pthread_attr_destroy(&thread_attr);
+
     if (rc != 0) {
         plugin_logger_error(&g_logger, "Failed to create EtherCAT cycle thread (rc=%d)", rc);
         atomic_store(&g_thread_running, false);
@@ -676,6 +773,10 @@ void cleanup(void)
     }
 
     atomic_store(&g_plugin_state, ECAT_STATE_STOPPED);
+
+    pthread_mutex_destroy(&g_shadow_mutex);
+    pthread_mutex_destroy(&g_status_mutex);
+
     plugin_logger_info(&g_logger, "EtherCAT plugin cleanup complete");
 }
 
@@ -683,7 +784,8 @@ void cleanup(void)
  * @brief Called at the start of each PLC scan cycle
  *
  * Copies input data from the shadow IOmap into PLC input buffers.
- * The actual bus exchange happens in the independent EtherCAT thread.
+ * Uses trylock to avoid blocking the deterministic PLC scan cycle.
+ * If the EtherCAT thread holds the mutex, this cycle uses stale input data.
  */
 void cycle_start(void)
 {
@@ -691,16 +793,20 @@ void cycle_start(void)
     if (state != ECAT_STATE_OPERATIONAL && state != ECAT_STATE_RECOVERING)
         return;
 
-    pthread_mutex_lock(&g_shadow_mutex);
-    ecat_io_read_inputs(&g_channel_map, g_shadow_iomap, &g_runtime_args);
-    pthread_mutex_unlock(&g_shadow_mutex);
+    if (pthread_mutex_trylock(&g_shadow_mutex) == 0) {
+        ecat_io_read_inputs(&g_channel_map, g_shadow_iomap, &g_runtime_args);
+        pthread_mutex_unlock(&g_shadow_mutex);
+    } else {
+        atomic_fetch_add(&g_shadow_lock_skips, 1);
+    }
 }
 
 /**
  * @brief Called at the end of each PLC scan cycle
  *
  * Copies PLC output buffers into the shadow IOmap.
- * The actual bus exchange happens in the independent EtherCAT thread.
+ * Uses trylock to avoid blocking the deterministic PLC scan cycle.
+ * If the EtherCAT thread holds the mutex, outputs are deferred to the next cycle.
  */
 void cycle_end(void)
 {
@@ -708,9 +814,12 @@ void cycle_end(void)
     if (state != ECAT_STATE_OPERATIONAL && state != ECAT_STATE_RECOVERING)
         return;
 
-    pthread_mutex_lock(&g_shadow_mutex);
-    ecat_io_write_outputs(&g_channel_map, g_shadow_iomap, &g_runtime_args);
-    pthread_mutex_unlock(&g_shadow_mutex);
+    if (pthread_mutex_trylock(&g_shadow_mutex) == 0) {
+        ecat_io_write_outputs(&g_channel_map, g_shadow_iomap, &g_runtime_args);
+        pthread_mutex_unlock(&g_shadow_mutex);
+    } else {
+        atomic_fetch_add(&g_shadow_lock_skips, 1);
+    }
 }
 
 /*
@@ -864,6 +973,7 @@ static int handle_status_command(char *response, size_t response_size)
     cJSON_AddNumberToObject(metrics, "max_exchange_us", (double)snap.max_exchange_us);
     cJSON_AddNumberToObject(metrics, "consecutive_wkc_errors", snap.consecutive_wkc_errors);
     cJSON_AddNumberToObject(metrics, "recovery_attempts", snap.recovery_attempts);
+    cJSON_AddNumberToObject(metrics, "shadow_lock_skips", (double)snap.shadow_lock_skips);
     cJSON_AddItemToObject(resp, "metrics", metrics);
 
     char *json_str = cJSON_PrintUnformatted(resp);
@@ -922,6 +1032,7 @@ static int handle_diagnostics_command(char *response, size_t response_size)
     cJSON_AddNumberToObject(timing, "max_exchange_us", (double)snap.max_exchange_us);
     cJSON_AddNumberToObject(timing, "configured_cycle_us", g_config.master.cycle_time_us);
     cJSON_AddNumberToObject(timing, "receive_timeout_us", g_receive_timeout_us);
+    cJSON_AddNumberToObject(timing, "shadow_lock_skips", (double)snap.shadow_lock_skips);
     cJSON_AddItemToObject(resp, "timing", timing);
 
     /* Recovery info */

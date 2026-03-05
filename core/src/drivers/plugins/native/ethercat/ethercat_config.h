@@ -282,6 +282,7 @@ typedef struct {
     int                 consecutive_wkc_errors;
     int                 recovery_attempts;
     int                 expected_wkc;
+    uint64_t            shadow_lock_skips;
 } ecat_master_status_t;
 
 /**
