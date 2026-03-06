@@ -25,16 +25,24 @@ if not HAS_PSUTIL:
     logger.info("psutil not available - process detection features disabled")
 
 
+MAX_RAPID_CRASHES = 3
+RAPID_CRASH_WINDOW = 30  # seconds
+
+
 class RuntimeManager:
-    def __init__(self, runtime_path, plc_socket, log_socket):
+    def __init__(self, runtime_path, plc_socket, log_socket, print_debug=False):
         self.runtime_path = runtime_path
         self.plc_socket = plc_socket
         self.log_socket = log_socket
+        self.print_debug = print_debug
         self.process = None
         self.log_server = UnixLogServer(log_socket)
         self.runtime_socket = SyncUnixClient(plc_socket)
         self.monitor_thread = threading.Thread(target=self._monitor, daemon=True)
         self.running = False
+        self._crash_lock = threading.Lock()
+        self._crash_times: list[float] = []
+        self._safe_mode = False
 
     def find_running_process(self):
         """
@@ -132,7 +140,10 @@ class RuntimeManager:
             logger.info("Starting PLC runtime core...")
             self._safe_start_log_server()
             try:
-                self.process = subprocess.Popen([self.runtime_path])
+                cmd = [self.runtime_path]
+                if self.print_debug:
+                    cmd.append("--print-debug")
+                self.process = subprocess.Popen(cmd)
             except (OSError, subprocess.SubprocessError) as e:
                 logger.error("Failed to start PLC runtime process: %s", e)
                 self.process = None
@@ -158,25 +169,58 @@ class RuntimeManager:
                 return True
         return False
 
+    def _start_runtime_process(self, safe_mode=False):
+        """Start the runtime process, optionally in safe mode."""
+        self._safe_start_log_server()
+        try:
+            cmd = [self.runtime_path]
+            if self.print_debug:
+                cmd.append("--print-debug")
+            if safe_mode:
+                cmd.append("--safe-mode")
+            self.process = subprocess.Popen(cmd)
+        except (OSError, subprocess.SubprocessError) as e:
+            logger.error("Failed to start PLC runtime process: %s", e)
+            self.process = None
+        time.sleep(1)  # Give time to start
+        self._safe_connect_runtime_socket()
+
+    def _record_crash_and_check_safe_mode(self):
+        """Record a crash timestamp and check if safe mode should be entered."""
+        with self._crash_lock:
+            now = time.time()
+            # Keep only crashes within the time window
+            self._crash_times = [t for t in self._crash_times if now - t < RAPID_CRASH_WINDOW]
+            self._crash_times.append(now)
+            return len(self._crash_times) >= MAX_RAPID_CRASHES
+
     def _monitor(self):
         """
-        Monitor the PLC runtime process and restart if it dies
+        Monitor the PLC runtime process and restart if it dies.
+        Tracks crash frequency and enters safe mode after repeated failures.
         """
         while self.running:
             if not self.is_runtime_alive():
-                # Process died, restart
-                logger.warning("PLC runtime process died, restarting...")
+                logger.warning("PLC runtime process died unexpectedly")
                 self._safe_stop_log_server()
                 self._safe_close_runtime_socket()
 
-                self._safe_start_log_server()
-                try:
-                    self.process = subprocess.Popen([self.runtime_path])
-                except (OSError, subprocess.SubprocessError) as e:
-                    logger.error("Failed to start PLC runtime process: %s", e)
-                    self.process = None
-                time.sleep(1)  # Give time to start
-                self._safe_connect_runtime_socket()
+                if self._record_crash_and_check_safe_mode():
+                    with self._crash_lock:
+                        if not self._safe_mode:
+                            logger.error(
+                                "PLC program caused %d crashes within %d seconds. "
+                                "Restarting runtime in SAFE MODE - "
+                                "PLC program will NOT be loaded. "
+                                "Upload a corrected program to recover.",
+                                MAX_RAPID_CRASHES,
+                                RAPID_CRASH_WINDOW,
+                            )
+                            self._safe_mode = True
+                    self._start_runtime_process(safe_mode=True)
+                else:
+                    logger.warning("Restarting PLC runtime...")
+                    self._start_runtime_process(safe_mode=False)
             else:
                 # Make sure log server and socket are connected
                 if not self.log_server.running:
@@ -215,6 +259,12 @@ class RuntimeManager:
             self.process = None
         self._safe_stop_log_server()
         self._safe_close_runtime_socket()
+
+    def reset_crash_tracking(self):
+        """Reset crash tracking state after a successful program upload."""
+        with self._crash_lock:
+            self._crash_times.clear()
+            self._safe_mode = False
 
     def get_logs(self, min_id=None, level=None):
         """

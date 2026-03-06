@@ -149,7 +149,7 @@ int create_shm_name(char *buf, size_t size)
     }
     close(fd);
 
-    snprintf(buf, size, "/%s", strrchr(shm_mask, '/') + 1);
+    snprintf(buf, size, "%s", strrchr(shm_mask, '/') + 1);
     unlink(shm_mask);
 
     return 0;
@@ -197,8 +197,8 @@ int python_block_loader(const char *script_name, const char *script_content, cha
 
     LOG_INFO("[Python loader] Random shared memory location: %s", shm_name);
 
-    snprintf(shm_in_name, sizeof(shm_in_name), "%s_in", shm_name);
-    snprintf(shm_out_name, sizeof(shm_out_name), "%s_out", shm_name);
+    snprintf(shm_in_name, sizeof(shm_in_name), "/%s_in", shm_name);
+    snprintf(shm_out_name, sizeof(shm_out_name), "/%s_out", shm_name);
 
     // Store names for cleanup
     strncpy(block->shm_in_name, shm_in_name, sizeof(block->shm_in_name) - 1);

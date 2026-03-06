@@ -6,6 +6,7 @@ class LoggerConfig:
     log_id: int = 0
     log_level: int = logging.INFO
     use_buffer: bool = False
+    print_debug: bool = False
     _log_id_lock = threading.Lock()
 
     @classmethod

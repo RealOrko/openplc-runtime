@@ -293,6 +293,7 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated"):
 
     # Restart PLC only if everything succeeded
     if build_state.status == BuildStatus.SUCCESS:
+        runtime_manager.reset_crash_tracking()
         runtime_manager.start_plc()
     else:
         build_state.log("[WARNING] PLC program has not been updated because the build failed\n")

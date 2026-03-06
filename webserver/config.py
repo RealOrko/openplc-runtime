@@ -148,11 +148,11 @@ except RuntimeError as e:
         .lower()
     )
     if response == "y":
-        print("Regenerating .env with new valid values...")
+        logger.info("Regenerating .env with new valid values...")
         generate_env_file()
         load_dotenv(ENV_PATH)
     else:
-        print("Exiting due to invalid environment configuration.")
+        logger.error("Exiting due to invalid environment configuration.")
         sys.exit(1)
 
 

@@ -36,12 +36,12 @@ from shared.plugin_config_decode.opcua_config_model import OpcuaConfig
 # Import local modules (use absolute imports for runtime compatibility)
 try:
     # Try relative imports first (when loaded as package)
-    from .opcua_logging import get_logger, log_info, log_warn, log_error
+    from .opcua_logging import get_logger, log_debug, log_error, log_info, log_warn
     from .config import load_config
     from .server import OpcuaServerManager
 except ImportError:
     # Fall back to absolute imports (when loaded directly by runtime)
-    from opcua_logging import get_logger, log_info, log_warn, log_error
+    from opcua_logging import get_logger, log_debug, log_error, log_info, log_warn
     from config import load_config
     from server import OpcuaServerManager
 
@@ -58,58 +58,35 @@ _stop_event = threading.Event()
 def init(args_capsule) -> bool:
     """
     Initialize the OPC UA plugin.
-    
+
     Called once when the plugin is loaded by the runtime.
-    
+
     Args:
         args_capsule: PyCapsule containing runtime arguments
-        
+
     Returns:
         True if initialization successful, False otherwise
     """
-    global _runtime_args, _buffer_accessor, _config, _server_manager
-    
+    global _runtime_args
+
     log_info("OPC UA Plugin initializing...")
-    
+
     try:
         # Extract runtime arguments
         _runtime_args, error_msg = safe_extract_runtime_args_from_capsule(args_capsule)
         if not _runtime_args:
             log_error(f"Failed to extract runtime args: {error_msg}")
             return False
-        
+
         # Initialize logging with runtime accessor
         logging_accessor = SafeLoggingAccess(_runtime_args)
         if logging_accessor.is_valid:
             get_logger().initialize(logging_accessor)
-            log_info("Logging initialized with runtime accessor")
-        
-        # Create buffer accessor
-        _buffer_accessor = SafeBufferAccess(_runtime_args)
-        if not _buffer_accessor.is_valid:
-            log_error(f"Failed to create buffer accessor: {_buffer_accessor.error_msg}")
-            return False
-        
-        log_info("Buffer accessor created")
-        
-        # Load configuration
-        config_path, config_error = _buffer_accessor.get_config_path()
-        if not config_path:
-            log_error(f"Failed to get config path: {config_error}")
-            return False
-        
-        _config = load_config(config_path)
-        if not _config:
-            log_error("Failed to load configuration")
-            return False
-        
-        # Create server manager
-        plugin_dir = os.path.dirname(__file__)
-        _server_manager = OpcuaServerManager(_config, _buffer_accessor, plugin_dir)
-        
+            log_debug("Logging initialized with runtime accessor")
+
         log_info("OPC UA Plugin initialized successfully")
         return True
-        
+
     except Exception as e:
         log_error(f"Initialization error: {e}")
         return False
@@ -118,24 +95,47 @@ def init(args_capsule) -> bool:
 def start_loop() -> bool:
     """
     Start the OPC UA server.
-    
+
     Called after successful initialization to start the server.
-    
+
     Returns:
         True if server started successfully, False otherwise
     """
-    global _server_thread
-    
+    global _buffer_accessor, _config, _server_manager, _server_thread
+
     log_info("Starting OPC UA server...")
-    
+
     try:
-        if not _server_manager:
+        if not _runtime_args:
             log_error("Plugin not initialized")
             return False
-        
+
+        # Create buffer accessor
+        _buffer_accessor = SafeBufferAccess(_runtime_args)
+        if not _buffer_accessor.is_valid:
+            log_error(f"Failed to create buffer accessor: {_buffer_accessor.error_msg}")
+            return False
+
+        log_debug("Buffer accessor created")
+
+        # Load configuration
+        config_path, config_error = _buffer_accessor.get_config_path()
+        if not config_path:
+            log_error(f"Failed to get config path: {config_error}")
+            return False
+
+        _config = load_config(config_path)
+        if not _config:
+            log_error("Failed to load configuration")
+            return False
+
+        # Create server manager
+        plugin_dir = os.path.dirname(__file__)
+        _server_manager = OpcuaServerManager(_config, _buffer_accessor, plugin_dir)
+
         # Reset stop event
         _stop_event.clear()
-        
+
         # Start server in background thread
         _server_thread = threading.Thread(
             target=_run_server_thread,
@@ -143,10 +143,10 @@ def start_loop() -> bool:
             name="opcua-server"
         )
         _server_thread.start()
-        
-        log_info("OPC UA server thread started")
+
+        log_debug("OPC UA server thread started")
         return True
-        
+
     except Exception as e:
         log_error(f"Failed to start server: {e}")
         return False
@@ -176,7 +176,7 @@ def stop_loop() -> bool:
             if _server_thread.is_alive():
                 log_warn("Server thread did not stop within timeout")
             else:
-                log_info("Server thread stopped")
+                log_debug("Server thread stopped")
         
         _server_thread = None
         log_info("OPC UA server stopped")

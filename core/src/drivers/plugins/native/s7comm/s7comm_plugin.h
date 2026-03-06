@@ -34,7 +34,7 @@ int init(void *args);
  * Starts the Snap7 server and begins accepting client connections
  * on the configured port (default: 102).
  */
-void start_loop(void);
+int start_loop(void);
 
 /**
  * @brief Stop the S7 server

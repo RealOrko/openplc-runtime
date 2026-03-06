@@ -29,3 +29,38 @@ class JsonFormatter(logging.Formatter):
         
         return json.dumps(log_entry)
 
+
+class HumanReadableFormatter(logging.Formatter):
+    """Format log records as human-readable strings for stdout."""
+
+    def format(self, record):
+        msg = record.getMessage()
+
+        # Try to detect pre-formatted JSON (from C runtime)
+        try:
+            log_entry = json.loads(msg)
+            timestamp = log_entry.get("timestamp", "")
+            level = log_entry.get("level", record.levelname)
+            message = log_entry.get("message", msg)
+
+            # Convert Unix timestamp to human-readable
+            if timestamp and str(timestamp).isdigit():
+                dt = datetime.fromtimestamp(int(timestamp), tz=timezone.utc)
+                timestamp = dt.strftime("%Y-%m-%d %H:%M:%S")
+            elif timestamp:
+                # Handle ISO 8601 format
+                try:
+                    dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                    timestamp = dt.strftime("%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        except (json.JSONDecodeError, ValueError):
+            # Not JSON - use record fields directly
+            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            level = record.levelname
+            message = msg
+
+        return f"[{timestamp}] [{level}] {message}"

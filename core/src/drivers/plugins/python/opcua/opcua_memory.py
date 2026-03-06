@@ -13,10 +13,10 @@ if _current_dir not in sys.path:
 # Import local modules (handle both package and direct loading)
 try:
     from .opcua_types import VariableMetadata
-    from .opcua_logging import log_info, log_warn, log_error
+    from .opcua_logging import log_debug, log_error, log_info, log_warn
 except ImportError:
     from opcua_types import VariableMetadata
-    from opcua_logging import log_info, log_warn, log_error
+    from opcua_logging import log_debug, log_error, log_info, log_warn
 
 
 # IEC 61131-3 STRING constants (must match iec_types.h)
@@ -296,7 +296,7 @@ def initialize_variable_cache(sba, indices: List[int]) -> Dict[int, VariableMeta
                 )
                 cache[var_index] = metadata
 
-        log_info(f"Cached metadata for {len(cache)} variables")
+        log_debug(f"Cached metadata for {len(cache)} variables")
         return cache
 
     except Exception as e:

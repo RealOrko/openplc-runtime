@@ -11,6 +11,7 @@
  */
 
 #include "journal_buffer.h"
+#include "utils/log.h"
 #include "utils/utils.h"
 #include <stdio.h>
 #include <string.h>
@@ -56,12 +57,12 @@ static void emergency_flush_locked(void);
 int journal_init(const journal_buffer_ptrs_t *buffer_ptrs)
 {
     if (buffer_ptrs == NULL) {
-        fprintf(stderr, "[JOURNAL] Error: buffer_ptrs is NULL\n");
+        log_error("Journal: buffer_ptrs is NULL");
         return -1;
     }
 
     if (buffer_ptrs->image_mutex == NULL) {
-        fprintf(stderr, "[JOURNAL] Error: image_mutex is NULL\n");
+        log_error("Journal: image_mutex is NULL");
         return -1;
     }
 

@@ -4,6 +4,10 @@ import subprocess
 from ipaddress import ip_address
 from pathlib import Path
 
+from webserver.logger import get_logger
+
+logger, _ = get_logger(__name__)
+
 
 def validate_hostname(hostname: str) -> str:
     """
@@ -158,7 +162,7 @@ class CertGen:
             ValueError: If file paths are invalid
             RuntimeError: If certificate generation fails
         """
-        print(f"Generating self-signed certificate for {self.hostname}...")
+        logger.info(f"Generating self-signed certificate for {self.hostname}...")
 
         cert_path = str(validate_file_path(cert_file))
         key_path = str(validate_file_path(key_file))
@@ -196,16 +200,16 @@ class CertGen:
 
         try:
             subprocess.run(cmd, check=True, capture_output=True, text=True)
-            print(f"Certificate saved to {cert_path}")
-            print(f"Private key saved to {key_path}")
+            logger.info(f"Certificate saved to {cert_path}")
+            logger.info(f"Private key saved to {key_path}")
             return f"Certificate generated successfully for {self.hostname}"
         except subprocess.CalledProcessError as e:
             error_msg = f"Error generating certificate: {e.stderr}"
-            print(error_msg)
+            logger.error(error_msg)
             raise RuntimeError(error_msg) from e
         except FileNotFoundError as exc:
             error_msg = "OpenSSL not found. Please ensure OpenSSL is installed."
-            print(error_msg)
+            logger.error(error_msg)
             raise RuntimeError(error_msg) from exc
 
     def is_certificate_valid(self, cert_file):
@@ -221,11 +225,11 @@ class CertGen:
         try:
             cert_path = str(validate_file_path(cert_file))
         except ValueError as e:
-            print(f"Invalid certificate path: {e}")
+            logger.error(f"Invalid certificate path: {e}")
             return False
 
         if not os.path.exists(cert_path):
-            print(f"Certificate file not found: {cert_path}")
+            logger.warning(f"Certificate file not found: {cert_path}")
             return False
 
         try:
@@ -259,14 +263,14 @@ class CertGen:
                     text=True,
                 )
                 expiry_line = date_result.stdout.strip()
-                print(f"Certificate is valid. {expiry_line}")
+                logger.info(f"Certificate is valid. {expiry_line}")
                 return True
-            print("Certificate has expired.")
+            logger.warning("Certificate has expired.")
             return False
 
         except subprocess.CalledProcessError as e:
-            print(f"Error checking certificate validity: {e.stderr}")
+            logger.error(f"Error checking certificate validity: {e.stderr}")
             return False
         except FileNotFoundError:
-            print("OpenSSL not found. Please ensure OpenSSL is installed.")
+            logger.error("OpenSSL not found. Please ensure OpenSSL is installed.")
             return False

@@ -16,7 +16,7 @@ typedef enum
 } plugin_type_t;
 
 typedef int (*plugin_init_func_t)(void *);
-typedef void (*plugin_start_loop_func_t)(void);
+typedef int (*plugin_start_loop_func_t)(void);
 typedef void (*plugin_stop_loop_func_t)(void);
 typedef void (*plugin_cycle_start_func_t)(void);
 typedef void (*plugin_cycle_end_func_t)(void);
@@ -62,7 +62,6 @@ int plugin_driver_update_config(plugin_driver_t *driver, const char *config_file
 int plugin_driver_init(plugin_driver_t *driver);
 int plugin_driver_start(plugin_driver_t *driver);
 int plugin_driver_stop(plugin_driver_t *driver);
-int plugin_driver_restart(plugin_driver_t *driver);
 void plugin_driver_destroy(plugin_driver_t *driver);
 int plugin_mutex_take(pthread_mutex_t *mutex);
 int plugin_mutex_give(pthread_mutex_t *mutex);

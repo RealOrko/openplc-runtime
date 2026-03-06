@@ -43,9 +43,9 @@ if _current_dir not in sys.path:
 
 # Import logging (handle both package and direct loading)
 try:
-    from .opcua_logging import log_error, log_info, log_warn
+    from .opcua_logging import log_debug, log_error, log_info, log_warn
 except ImportError:
-    from opcua_logging import log_error, log_info, log_warn
+    from opcua_logging import log_debug, log_error, log_info, log_warn
 
 
 # ioctl constants for network interface enumeration (Linux)
@@ -274,10 +274,10 @@ def generate_certificate_with_sans(
         with open(cert_path, "wb") as f:
             f.write(certificate.public_bytes(serialization.Encoding.PEM))
 
-        log_info(f"Generated certificate with {len(san_entries)} SAN entries")
-        log_info(f"  DNS names: {dns_names}")
-        log_info(f"  IP addresses: {ip_addresses}")
-        log_info(f"  URI: {app_uri}")
+        log_debug(f"Generated certificate with {len(san_entries)} SAN entries")
+        log_debug(f"  DNS names: {dns_names}")
+        log_debug(f"  IP addresses: {ip_addresses}")
+        log_debug(f"  URI: {app_uri}")
 
         return True
 
@@ -507,7 +507,7 @@ class OpcuaSecurityManager:
 
             # Certificate is valid
             days_until_expiry = (not_valid_after - now_utc).days
-            log_info(f"Certificate {cert_path} is valid for {days_until_expiry} more days")
+            log_debug(f"Certificate {cert_path} is valid for {days_until_expiry} more days")
             return True
 
         except Exception as e:
@@ -526,7 +526,7 @@ class OpcuaSecurityManager:
             if os.path.exists(file_path):
                 try:
                     os.remove(file_path)
-                    log_info(f"Removed expired certificate file: {file_path}")
+                    log_debug(f"Removed expired certificate file: {file_path}")
                 except Exception as e:
                     log_warn(f"Failed to remove file {file_path}: {e}")
 
@@ -547,14 +547,14 @@ class OpcuaSecurityManager:
             # Check if certificates already exist and are valid
             if os.path.exists(cert_path) and os.path.exists(key_path):
                 if self._is_certificate_valid(cert_path):
-                    log_info(f"Found valid server certificates in {self.certs_dir}")
+                    log_debug(f"Found valid server certificates in {self.certs_dir}")
                 else:
-                    log_info("Server certificate is expired or invalid, regenerating")
+                    log_debug("Server certificate is expired or invalid, regenerating")
                     self._remove_certificate_files(cert_path, key_path)
                     if not await self.generate_server_certificate(cert_path, key_path):
                         return False
             else:
-                log_info(f"Server certificates not found, generating new ones in {self.certs_dir}")
+                log_debug(f"Server certificates not found, generating new ones in {self.certs_dir}")
                 if not await self.generate_server_certificate(cert_path, key_path):
                     return False
 
@@ -585,7 +585,7 @@ class OpcuaSecurityManager:
             if not self._validate_certificate_format():
                 return False
 
-            log_info(f"Server certificates loaded from {cert_path}")
+            log_debug(f"Server certificates loaded from {cert_path}")
             return True
 
         except FileNotFoundError as e:
@@ -657,9 +657,9 @@ class OpcuaSecurityManager:
                         if isinstance(name, x509.UniformResourceIdentifier)
                     ]
 
-                    log_info(f"Certificate SAN DNS names: {dns_names}")
-                    log_info(f"Certificate SAN IP addresses: {ip_addresses}")
-                    log_info(f"Certificate SAN URIs: {uris}")
+                    log_debug(f"Certificate SAN DNS names: {dns_names}")
+                    log_debug(f"Certificate SAN IP addresses: {ip_addresses}")
+                    log_debug(f"Certificate SAN URIs: {uris}")
 
                     # Check if we have expected entries
                     system_hostname = socket.gethostname()
@@ -690,7 +690,7 @@ class OpcuaSecurityManager:
                 except x509.ExtensionNotFound:
                     log_warn("Certificate missing key usage extension")
 
-                log_info("Certificate format and extensions validated")
+                log_debug("Certificate format and extensions validated")
                 return True
 
             except ImportError:
@@ -701,7 +701,7 @@ class OpcuaSecurityManager:
             try:
                 # Try as DER format
                 ssl.DER_cert_to_PEM_cert(self.certificate_data)
-                log_info("Certificate validated as DER format")
+                log_debug("Certificate validated as DER format")
                 return True
             except Exception as e:
                 log_error(f"Invalid certificate format: {e}")
@@ -733,13 +733,13 @@ class OpcuaSecurityManager:
                         {"pem": cert_pem, "der": cert_der, "hash": cert_hash}
                     )
 
-                    log_info(f"Loaded trusted certificate {i + 1} (SHA256: {cert_hash})")
+                    log_debug(f"Loaded trusted certificate {i + 1} (SHA256: {cert_hash})")
 
                 except Exception as e:
                     log_error(f"Invalid trusted certificate {i + 1}: {e}")
                     return False
 
-            log_info(f"Loaded {len(self.trusted_certificates)} trusted client certificates")
+            log_debug(f"Loaded {len(self.trusted_certificates)} trusted client certificates")
             return True
 
         except Exception as e:
@@ -774,7 +774,7 @@ class OpcuaSecurityManager:
             # Check if client certificate matches any trusted certificate
             for trusted_cert in self.trusted_certificates:
                 if trusted_cert["der"] == client_cert_der:
-                    log_info(f"Client certificate trusted (SHA256: {client_hash})")
+                    log_debug(f"Client certificate trusted (SHA256: {client_hash})")
                     return True
 
             log_error(f"Client certificate not trusted (SHA256: {client_hash})")
@@ -863,9 +863,9 @@ class OpcuaSecurityManager:
             local_ips = get_local_ip_addresses()
             ip_addresses = list(local_ips)
 
-            log_info(f"Generating certificate with DNS SANs: {dns_names}")
-            log_info(f"Generating certificate with IP SANs: {ip_addresses}")
-            log_info(f"Application URI: {app_uri}")
+            log_debug(f"Generating certificate with DNS SANs: {dns_names}")
+            log_debug(f"Generating certificate with IP SANs: {ip_addresses}")
+            log_debug(f"Application URI: {app_uri}")
 
             # Use custom certificate generation with multiple SANs
             success = generate_certificate_with_sans(
@@ -880,7 +880,7 @@ class OpcuaSecurityManager:
             )
 
             if success:
-                log_info(f"Server certificate generated with proper SANs: {cert_path}")
+                log_debug(f"Server certificate generated with proper SANs: {cert_path}")
             return success
 
         except Exception as e:
@@ -907,7 +907,7 @@ class OpcuaSecurityManager:
 
             if policy_type is not None:
                 security_policies.append(policy_type)
-                log_info(
+                log_debug(
                     f"Added security profile '{profile.name}': {profile.security_policy}/{profile.security_mode} -> {policy_type}"
                 )
             else:
@@ -919,12 +919,12 @@ class OpcuaSecurityManager:
         permission_ruleset = OpenPLCRoleRuleset()
 
         if security_policies:
-            log_info("=== SECURITY MANAGER DEBUG ===")
-            log_info(f"Setting {len(security_policies)} security policies: {security_policies}")
+            log_debug("=== SECURITY MANAGER DEBUG ===")
+            log_debug(f"Setting {len(security_policies)} security policies: {security_policies}")
             server.set_security_policy(security_policies, permission_ruleset=permission_ruleset)
-            log_info("Security policies applied to server successfully")
-            log_info("Using OpenPLCRoleRuleset for subscription permission support")
-            log_info("=== END SECURITY MANAGER DEBUG ===")
+            log_debug("Security policies applied to server successfully")
+            log_debug("Using OpenPLCRoleRuleset for subscription permission support")
+            log_debug("=== END SECURITY MANAGER DEBUG ===")
         else:
             # Default to no security if no profiles enabled
             log_warn("No security profiles enabled, defaulting to NoSecurity")
@@ -933,9 +933,9 @@ class OpcuaSecurityManager:
             )
 
         # Setup server certificates if needed
-        log_info("=== CERTIFICATE SETUP DEBUG ===")
+        log_debug("=== CERTIFICATE SETUP DEBUG ===")
         await self._setup_server_certificates_for_asyncua(server, app_uri)
-        log_info("=== END CERTIFICATE SETUP DEBUG ===")
+        log_debug("=== END CERTIFICATE SETUP DEBUG ===")
 
     async def _setup_server_certificates_for_asyncua(self, server, app_uri: str = None) -> None:
         """Setup server certificates for asyncua Server.
@@ -965,17 +965,17 @@ class OpcuaSecurityManager:
             # Check if we need to generate new certificates
             need_generation = False
             if not cert_file.exists() or not key_file.exists():
-                log_info("Certificate files not found, will generate new ones")
+                log_debug("Certificate files not found, will generate new ones")
                 need_generation = True
             elif not self._is_certificate_valid(str(cert_file)):
-                log_info("Certificate is expired or invalid, will regenerate")
+                log_debug("Certificate is expired or invalid, will regenerate")
                 self._remove_certificate_files(str(cert_file), str(key_file))
                 need_generation = True
 
             if need_generation:
-                log_info(f"Generating new self-signed certificate in {cert_dir}")
-                log_info(f"Certificate will be created for app_uri: {app_uri}")
-                log_info(f"Certificate will be created for hostname: {hostname}")
+                log_debug(f"Generating new self-signed certificate in {cert_dir}")
+                log_debug(f"Certificate will be created for app_uri: {app_uri}")
+                log_debug(f"Certificate will be created for hostname: {hostname}")
 
                 # Collect DNS names for SAN
                 dns_names = [hostname]
@@ -986,8 +986,8 @@ class OpcuaSecurityManager:
                 local_ips = get_local_ip_addresses()
                 ip_addresses = list(local_ips)
 
-                log_info(f"Certificate DNS SANs: {dns_names}")
-                log_info(f"Certificate IP SANs: {ip_addresses}")
+                log_debug(f"Certificate DNS SANs: {dns_names}")
+                log_debug(f"Certificate IP SANs: {ip_addresses}")
 
                 # Use custom certificate generation with multiple SANs
                 success = generate_certificate_with_sans(
@@ -1006,18 +1006,18 @@ class OpcuaSecurityManager:
                     )
                     return
 
-                log_info(f"Certificate files created successfully: {cert_file}, {key_file}")
+                log_debug(f"Certificate files created successfully: {cert_file}, {key_file}")
             else:
-                log_info(f"Using existing valid certificate files: {cert_file}, {key_file}")
+                log_debug(f"Using existing valid certificate files: {cert_file}, {key_file}")
 
             # Load and convert certificate from PEM to DER
-            log_info(f"Loading server certificate from: {cert_file}")
+            log_debug(f"Loading server certificate from: {cert_file}")
             with open(cert_file, "rb") as f:
                 cert_pem_data = f.read()
-            log_info(f"Certificate PEM loaded: {len(cert_pem_data)} bytes")
+            log_debug(f"Certificate PEM loaded: {len(cert_pem_data)} bytes")
 
             # Load private key
-            log_info(f"Loading server private key from: {key_file}")
+            log_debug(f"Loading server private key from: {key_file}")
             with open(key_file, "rb") as f:
                 key_pem_data = f.read()
 
@@ -1030,7 +1030,7 @@ class OpcuaSecurityManager:
                 # Convert certificate PEM to DER
                 cert_obj = x509.load_pem_x509_certificate(cert_pem_data)
                 cert_der_data = cert_obj.public_bytes(serialization.Encoding.DER)
-                log_info(f"Certificate converted to DER: {len(cert_der_data)} bytes")
+                log_debug(f"Certificate converted to DER: {len(cert_der_data)} bytes")
 
                 # Convert private key PEM to DER
                 private_key = load_pem_private_key(key_pem_data, password=None)
@@ -1039,19 +1039,19 @@ class OpcuaSecurityManager:
                     format=serialization.PrivateFormat.PKCS8,
                     encryption_algorithm=serialization.NoEncryption(),
                 )
-                log_info(f"Private key converted to DER: {len(key_der_data)} bytes")
+                log_debug(f"Private key converted to DER: {len(key_der_data)} bytes")
 
                 # Load certificate and key into server (both in DER format)
-                log_info(f"Loading certificate into asyncua server: {len(cert_der_data)} bytes DER")
+                log_debug(f"Loading certificate into asyncua server: {len(cert_der_data)} bytes DER")
                 await server.load_certificate(cert_der_data)
-                log_info(f"Loading private key into asyncua server: {len(key_der_data)} bytes DER")
+                log_debug(f"Loading private key into asyncua server: {len(key_der_data)} bytes DER")
                 await server.load_private_key(key_der_data)
 
             except Exception as e:
                 log_error(f"Failed to load certificate/key into asyncua server: {e}")
                 raise
 
-            log_info("Self-signed server certificate loaded successfully into asyncua server")
+            log_debug("Self-signed server certificate loaded successfully into asyncua server")
 
         elif hasattr(self.config, "security") and self.config.security.server_certificate_custom:
             cert_path = self.config.security.server_certificate_custom
@@ -1079,14 +1079,14 @@ class OpcuaSecurityManager:
 
                     await server.load_certificate(cert_data)
                     await server.load_private_key(der_key_data)
-                    log_info("Custom server certificate loaded (PEM cert + DER key)")
+                    log_debug("Custom server certificate loaded (PEM cert + DER key)")
                 except Exception as e:
                     log_error(f"Failed to load custom certificate: {e}")
 
         elif self.certificate_data and self.private_key_data:
             await server.load_certificate(self.certificate_data)
             await server.load_private_key(self.private_key_data)
-            log_info("SecurityManager certificates loaded into server")
+            log_debug("SecurityManager certificates loaded into server")
 
     async def create_trust_store(self, trusted_certificates: List[str]) -> Optional[TrustStore]:
         """Create and configure TrustStore with trusted client certificates.
@@ -1119,7 +1119,7 @@ class OpcuaSecurityManager:
                         f.write(cert_der)
 
                     cert_files.append(cert_file)
-                    log_info(f"Added trusted certificate {i + 1} to trust store")
+                    log_debug(f"Added trusted certificate {i + 1} to trust store")
 
                 except Exception as e:
                     log_warn(f"Failed to process trusted certificate {i + 1}: {e}")
@@ -1128,7 +1128,7 @@ class OpcuaSecurityManager:
                 # Create TrustStore with certificate files
                 trust_store = TrustStore(cert_files, [])
                 await trust_store.load()
-                log_info(f"TrustStore created with {len(cert_files)} certificates")
+                log_debug(f"TrustStore created with {len(cert_files)} certificates")
                 return trust_store
             else:
                 log_warn("No valid trusted certificates processed")
@@ -1146,7 +1146,7 @@ class OpcuaSecurityManager:
         if self._trust_store_temp_dir and os.path.exists(self._trust_store_temp_dir):
             try:
                 shutil.rmtree(self._trust_store_temp_dir)
-                log_info(f"Cleaned up trust store temp directory: {self._trust_store_temp_dir}")
+                log_debug(f"Cleaned up trust store temp directory: {self._trust_store_temp_dir}")
                 self._trust_store_temp_dir = None
             except Exception as e:
                 log_warn(f"Failed to clean up trust store temp directory: {e}")
@@ -1182,7 +1182,7 @@ class OpcuaSecurityManager:
 
             # Set validator on server
             server.set_certificate_validator(cert_validator)
-            log_info("Certificate validation configured")
+            log_debug("Certificate validation configured")
 
         except Exception as e:
             log_error(f"Failed to setup certificate validation: {e}")

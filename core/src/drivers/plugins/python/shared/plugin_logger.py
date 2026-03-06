@@ -25,6 +25,7 @@ The plugin name is automatically prefixed to all messages, e.g.:
     "[MODBUS_SLAVE] Server started on port 502"
 """
 
+from datetime import datetime, timezone
 from typing import Optional
 from .safe_logging_access import SafeLoggingAccess
 
@@ -83,7 +84,8 @@ class PluginLogger:
         This ensures messages are still visible in stdout even if the
         central logging system is not available.
         """
-        print(f"{self._prefix} [{level}] {message}")
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{timestamp}] [{level}] {self._prefix} {message}")
 
     def info(self, message: str) -> bool:
         """

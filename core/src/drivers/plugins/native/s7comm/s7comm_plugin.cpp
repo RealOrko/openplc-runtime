@@ -322,11 +322,8 @@ static int register_all_areas(void)
  */
 extern "C" int init(void *args)
 {
-    /* Initialize logger first (before we have runtime_args) */
-    plugin_logger_init(&g_logger, "S7COMM", NULL);
-    plugin_logger_info(&g_logger, "Initializing S7Comm plugin (journal-buffered)...");
-
     if (!args) {
+        plugin_logger_init(&g_logger, "S7COMM", NULL);
         plugin_logger_error(&g_logger, "init args is NULL");
         return -1;
     }
@@ -334,10 +331,25 @@ extern "C" int init(void *args)
     /* Copy runtime args (critical - pointer is freed after init returns) */
     memcpy(&g_runtime_args, args, sizeof(plugin_runtime_args_t));
 
-    /* Re-initialize logger with runtime_args for central logging */
+    /* Initialize logger with runtime_args for central logging */
     plugin_logger_init(&g_logger, "S7COMM", args);
+    plugin_logger_info(&g_logger, "Initializing S7Comm plugin...");
 
     plugin_logger_info(&g_logger, "Buffer size: %d", g_runtime_args.buffer_size);
+
+    g_initialized = true;
+    return 0;
+}
+
+/**
+ * @brief Start the S7 server
+ */
+extern "C" int start_loop(void)
+{
+    if (!g_initialized) {
+        plugin_logger_error(&g_logger, "Cannot start - plugin not initialized");
+        return -1;
+    }
 
     /* Parse configuration file */
     const char *config_path = g_runtime_args.plugin_specific_config_file_path;
@@ -360,7 +372,11 @@ extern "C" int init(void *args)
     /* Check if server is enabled */
     if (!g_config.enabled) {
         plugin_logger_info(&g_logger, "S7Comm server is disabled in configuration");
-        g_initialized = true;
+        return 0;
+    }
+
+    if (g_running) {
+        plugin_logger_warn(&g_logger, "Server already running");
         return 0;
     }
 
@@ -425,8 +441,7 @@ extern "C" int init(void *args)
     /* Register all S7 areas with the server */
     register_all_areas();
 
-    g_initialized = true;
-    plugin_logger_info(&g_logger, "S7Comm plugin initialized successfully (journal-buffered mode)");
+    plugin_logger_info(&g_logger, "S7Comm plugin setup complete (journal-buffered mode)");
 
     /* Log registered areas summary */
     if (g_pe_runtime.enabled) {
@@ -455,29 +470,6 @@ extern "C" int init(void *args)
                           g_db_runtime[i].start_buffer);
     }
 
-    return 0;
-}
-
-/**
- * @brief Start the S7 server
- */
-extern "C" void start_loop(void)
-{
-    if (!g_initialized) {
-        plugin_logger_error(&g_logger, "Cannot start - plugin not initialized");
-        return;
-    }
-
-    if (!g_config.enabled) {
-        plugin_logger_info(&g_logger, "S7 server disabled in configuration");
-        return;
-    }
-
-    if (g_running) {
-        plugin_logger_warn(&g_logger, "Server already running");
-        return;
-    }
-
     plugin_logger_info(&g_logger, "Starting S7 server on %s:%d...",
                        g_config.bind_address, g_config.port);
 
@@ -494,11 +486,12 @@ extern "C" void start_loop(void)
         if (g_config.port < 1024) {
             plugin_logger_error(&g_logger, "Note: Port %d requires root privileges on Linux", g_config.port);
         }
-        return;
+        return -1;
     }
 
     g_running = true;
     plugin_logger_info(&g_logger, "S7 server started successfully");
+    return 0;
 }
 
 /**

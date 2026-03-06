@@ -74,7 +74,7 @@ class PermissionCallbackHandler:
         Returns:
             True if callbacks registered successfully
         """
-        log_info("=== REGISTERING PERMISSION CALLBACKS ===")
+        log_debug("=== REGISTERING PERMISSION CALLBACKS ===")
 
         try:
             if server.iserver is None:
@@ -87,7 +87,7 @@ class PermissionCallbackHandler:
                 CallbackType.PreWrite,
                 self._on_pre_write
             )
-            log_info("PreWrite callback registered successfully")
+            log_debug("PreWrite callback registered successfully")
 
             # Register PreRead callback (synchronous method)
             log_debug("Registering PreRead callback...")
@@ -95,16 +95,16 @@ class PermissionCallbackHandler:
                 CallbackType.PreRead,
                 self._on_pre_read
             )
-            log_info("PreRead callback registered successfully")
+            log_debug("PreRead callback registered successfully")
 
-            log_info(f"Permission callbacks registered for {len(self.node_permissions)} nodes")
+            log_debug(f"Permission callbacks registered for {len(self.node_permissions)} nodes")
             return True
 
         except Exception as e:
             log_error(f"Failed to register callbacks: {e}")
 
             # Try alternative callback registration method
-            log_info("Trying alternative callback registration...")
+            log_debug("Trying alternative callback registration...")
             try:
                 if hasattr(server, 'subscribe_server_callback'):
                     server.subscribe_server_callback(
@@ -115,7 +115,7 @@ class PermissionCallbackHandler:
                         CallbackType.PreRead,
                         self._on_pre_read
                     )
-                    log_info("Alternative callback registration successful")
+                    log_debug("Alternative callback registration successful")
                     return True
                 else:
                     log_error("No callback registration method found")
@@ -232,8 +232,8 @@ class PermissionCallbackHandler:
                                  f"(role: {user_role}) on node {simple_node_id}: {value}")
                         raise ua.UaError("Access denied: insufficient write permissions")
                     else:
-                        log_info(f"ALLOW write for user {username} "
-                                 f"(role: {user_role}) on node {simple_node_id}: {value}")
+                        log_debug(f"ALLOW write for user {username} "
+                                  f"(role: {user_role}) on node {simple_node_id}: {value}")
                 else:
                     # No permissions configured - deny by default (fail-closed)
                     log_warn(f"DENY write for user {username} "
@@ -247,7 +247,7 @@ class PermissionCallbackHandler:
                     if "w" not in str(viewer_perm):
                         log_warn(f"DENY write for anonymous client on node {simple_node_id}")
                         raise ua.UaError("Access denied: anonymous write not allowed")
-                    log_info(f"ALLOW write for anonymous client on node {simple_node_id}: {value}")
+                    log_debug(f"ALLOW write for anonymous client on node {simple_node_id}: {value}")
                 else:
                     # No permissions configured - deny by default (fail-closed)
                     log_warn(f"DENY write for anonymous client on node {simple_node_id}: {value} "
