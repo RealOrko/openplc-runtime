@@ -9,12 +9,16 @@
  *
  * Plugin lifecycle:
  *   init()        -> Load config, initialize logger [state: IDLE]
- *   start_loop()  -> Scan bus, write SDOs, map PDOs, transition to OP,
- *                    start independent EtherCAT cycle thread [state: OPERATIONAL]
- *   cycle_start() -> Copy shadow buffer inputs to PLC buffers
- *   cycle_end()   -> Copy PLC buffers to shadow buffer outputs
- *   stop_loop()   -> Join cycle thread, close master [state: STOPPED]
+ *   start_loop()  -> Scan bus, write SDOs, map PDOs, transition to OP [state: OPERATIONAL]
+ *   cycle_start() -> Exchange process data, read inputs into PLC buffers
+ *   cycle_end()   -> (no-op, outputs written at start of next cycle)
+ *   stop_loop()   -> Close master [state: STOPPED]
  *   cleanup()     -> Free resources
+ *
+ * Architecture:
+ *   Process data exchange runs synchronously inside the PLC scan cycle
+ *   via the cycle_start() hook. No separate EtherCAT thread is used.
+ *   The bus cycle is fully synchronized with the PLC common_ticktime.
  *
  * State machine: STOPPED -> IDLE -> SCANNING -> CONFIGURING ->
  *                TRANSITIONING -> OPERATIONAL <-> RECOVERING -> ERROR
@@ -38,8 +42,8 @@ int init(void *args);
 /**
  * @brief Start the EtherCAT master
  *
- * Initializes SOEM, scans the bus, validates topology, and transitions
- * slaves to operational state.
+ * Initializes SOEM, scans the bus, validates topology, writes SDOs,
+ * maps PDOs, and transitions slaves to operational state.
  */
 void start_loop(void);
 
@@ -58,16 +62,17 @@ void cleanup(void);
 /**
  * @brief Called at the start of each PLC scan cycle
  *
- * Copies input data from the shadow IOmap into PLC input buffers.
- * The actual bus exchange happens in the independent EtherCAT cycle thread.
+ * Performs synchronous EtherCAT process data exchange:
+ * writes outputs from the previous cycle, exchanges with slaves,
+ * and reads fresh inputs into PLC buffers.
  */
 void cycle_start(void);
 
 /**
  * @brief Called at the end of each PLC scan cycle
  *
- * Copies PLC output buffers into the shadow IOmap.
- * The actual bus exchange happens in the independent EtherCAT cycle thread.
+ * No-op. Outputs are written at the start of the next cycle_start()
+ * to be sent together with the exchange that receives fresh inputs.
  */
 void cycle_end(void);
 

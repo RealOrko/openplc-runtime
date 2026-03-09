@@ -267,7 +267,7 @@ typedef struct {
 /**
  * @brief Master-level status snapshot for monitoring and diagnostics
  *
- * Updated periodically by the EtherCAT thread under g_status_mutex.
+ * Updated periodically by the PLC scan cycle under g_status_mutex.
  * Read by execute_command handlers for the "status" and "diagnostics" commands.
  */
 typedef struct {
@@ -282,7 +282,6 @@ typedef struct {
     int                 consecutive_wkc_errors;
     int                 recovery_attempts;
     int                 expected_wkc;
-    uint64_t            shadow_lock_skips;
 } ecat_master_status_t;
 
 /**
