@@ -50,8 +50,10 @@ int init(void *args);
  *
  * Initializes SOEM, scans the bus, validates topology, writes SDOs,
  * maps PDOs, and transitions slaves to operational state.
+ *
+ * @return 0 on success, -1 on failure
  */
-void start_loop(void);
+int start_loop(void);
 
 /**
  * @brief Stop the EtherCAT master

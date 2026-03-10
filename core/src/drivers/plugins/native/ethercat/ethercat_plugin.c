@@ -480,18 +480,18 @@ int init(void *args)
  *
  * Sequence: SCANNING -> CONFIGURING -> TRANSITIONING -> OPERATIONAL
  */
-void start_loop(void)
+int start_loop(void)
 {
     int state = atomic_load(&g_plugin_state);
     if (state != ECAT_STATE_IDLE && state != ECAT_STATE_STOPPED) {
         plugin_logger_error(&g_logger, "Cannot start - invalid state: %s",
                             ecat_state_to_string(state));
-        return;
+        return -1;
     }
 
     if (g_config.slave_count == 0) {
         plugin_logger_warn(&g_logger, "No slaves configured - EtherCAT master will not start");
-        return;
+        return -1;
     }
 
     /* --- Phase 1: SCANNING --- */
@@ -501,7 +501,7 @@ void start_loop(void)
     if (ecat_master_open_and_scan(&g_config, &g_logger) != 0) {
         plugin_logger_error(&g_logger, "Bus scan failed");
         atomic_store(&g_plugin_state, ECAT_STATE_ERROR);
-        return;
+        return -1;
     }
 
     /* --- Phase 2: CONFIGURING (SDO writes + PDO mapping) --- */
@@ -522,7 +522,7 @@ void start_loop(void)
         plugin_logger_error(&g_logger, "Process data mapping failed");
         ecat_master_close(&g_logger);
         atomic_store(&g_plugin_state, ECAT_STATE_ERROR);
-        return;
+        return -1;
     }
 
     /* Build channel map for process data exchange */
@@ -546,7 +546,7 @@ void start_loop(void)
         plugin_logger_error(&g_logger, "Failed to reach OPERATIONAL state");
         ecat_master_close(&g_logger);
         atomic_store(&g_plugin_state, ECAT_STATE_ERROR);
-        return;
+        return -1;
     }
 
     /* --- Phase 4: OPERATIONAL --- */
@@ -579,6 +579,8 @@ void start_loop(void)
     plugin_logger_info(&g_logger,
         "[state: OPERATIONAL] EtherCAT master started (synchronous exchange, "
         "monitor=%s)", ECAT_ENABLE_MONITOR_THREAD ? "enabled" : "disabled");
+
+    return 0;
 }
 
 /**
