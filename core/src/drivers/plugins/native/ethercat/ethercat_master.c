@@ -17,6 +17,15 @@
 #include <string.h>
 #include <stdio.h>
 
+/* SO_BUSY_POLL: Linux socket option for low-latency polling.
+ * When set, recvfrom() busy-polls the NIC driver for incoming frames
+ * instead of sleeping and waiting for an IRQ-triggered wakeup.
+ * This eliminates scheduler latency (~5-10us) on the receive path. */
+#if !defined(__CYGWIN__) && !defined(_WIN32)
+#include <sys/socket.h>
+#define ECAT_BUSY_POLL_US 50
+#endif
+
 /*
  * =============================================================================
  * SOEM Context and IO Map
@@ -137,6 +146,26 @@ int ecat_master_open_and_scan(const ecat_config_t *config, plugin_logger_t *logg
 
     g_soem_initialized = 1;
     plugin_logger_info(logger, "Network interface opened successfully");
+
+    /* Enable SO_BUSY_POLL on the SOEM raw socket.
+     * This makes recvfrom() spin-poll the NIC driver instead of sleeping,
+     * eliminating ~5-10us of scheduler wakeup latency per exchange. */
+#ifdef ECAT_BUSY_POLL_US
+    {
+        int busy_us = ECAT_BUSY_POLL_US;
+        int sockfd = g_ecx_context.port.sockhandle;
+        if (sockfd >= 0) {
+            if (setsockopt(sockfd, SOL_SOCKET, SO_BUSY_POLL,
+                           &busy_us, sizeof(busy_us)) == 0) {
+                plugin_logger_info(logger,
+                    "SO_BUSY_POLL enabled on socket (poll=%d us)", busy_us);
+            } else {
+                plugin_logger_debug(logger,
+                    "SO_BUSY_POLL not supported (kernel may need CONFIG_NET_RX_BUSY_POLL)");
+            }
+        }
+    }
+#endif
 
     /* Step 2: Scan the bus and enumerate slaves */
     plugin_logger_info(logger, "Scanning EtherCAT bus...");
