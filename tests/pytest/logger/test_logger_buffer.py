@@ -27,6 +27,7 @@ def test_multiple_logs_stored(test_logger):
         assert msg in logs[i]["message"]
 
 def test_log_levels_stored(test_logger):
+    """Debug messages are filtered when print_debug is False (default)."""
     logger, buffer = test_logger
     logger.debug("Debug message")
     logger.info("Info message")
@@ -34,7 +35,30 @@ def test_log_levels_stored(test_logger):
     logger.error("Error message")
     logs = buffer.get_logs()
     levels = [log["level"] for log in logs]
-    assert levels == ["DEBUG", "INFO", "WARNING", "ERROR"]
+    assert levels == ["INFO", "WARNING", "ERROR"]
+
+
+def test_log_levels_stored_with_print_debug(test_logger):
+    """Debug messages pass through when print_debug is enabled."""
+    from webserver.logger.config import LoggerConfig
+    from webserver.logger import get_logger
+
+    LoggerConfig.print_debug = True
+    try:
+        # Re-fetch logger to apply new level to handlers
+        logger, buffer = get_logger("test_logger", use_buffer=True)
+        buffer.clear()
+        logger.debug("Debug message")
+        logger.info("Info message")
+        logger.warning("Warning message")
+        logger.error("Error message")
+        logs = buffer.get_logs()
+        levels = [log["level"] for log in logs]
+        assert levels == ["DEBUG", "INFO", "WARNING", "ERROR"]
+    finally:
+        LoggerConfig.print_debug = False
+        # Re-fetch to restore INFO level on handlers
+        get_logger("test_logger", use_buffer=True)
 
 def test_normalize_no_microseconds(test_logger):
     logger, buffer = test_logger

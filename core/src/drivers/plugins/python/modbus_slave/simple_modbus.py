@@ -989,7 +989,7 @@ RETRY_DELAY_MAX = 30.0  # Maximum delay between restart attempts (seconds)
 
 def init(args_capsule):
     """Initialize the Modbus plugin"""
-    global runtime_args, server_context, gIp, gPort, logger
+    global runtime_args, logger
 
     # Initialize logger early (without runtime_args for now)
     logger = PluginLogger("MODBUS_SLAVE", None)
@@ -1015,6 +1015,27 @@ def init(args_capsule):
             runtime_args = args_capsule
             logger.info("Using direct runtime args for testing")
 
+        return True
+
+    except Exception as e:
+        logger.error(f"Plugin initialization failed: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return False
+
+
+def start_loop():
+    """Start the Modbus server with automatic restart on failure."""
+    global server_task, running, server_loop, server_started_event, server_error
+    global server_context, gIp, gPort
+
+    if runtime_args is None:
+        logger.error("Plugin not initialized")
+        return False
+
+    # Load configuration and create data blocks
+    try:
         # Try to load configuration from plugin_specific_config_file_path
         config_map = None
         buffer_config = None
@@ -1093,22 +1114,12 @@ def init(args_capsule):
         server_context = ModbusServerContext(devices={1: device}, single=False)
 
         logger.info(f"Plugin initialized successfully - Host: {gIp}, Port: {gPort}")
-        return True
 
     except Exception as e:
-        logger.error(f"Plugin initialization failed: {e}")
+        logger.error(f"Configuration loading failed: {e}")
         import traceback
 
         traceback.print_exc()
-        return False
-
-
-def start_loop():
-    """Start the Modbus server with automatic restart on failure."""
-    global server_task, running, server_loop, server_started_event, server_error
-
-    if server_context is None:
-        logger.error("Plugin not initialized")
         return False
 
     # Prevent double-start

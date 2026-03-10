@@ -1,3 +1,13 @@
+import sys
+
+# Parse --print-debug argument before any logger imports
+# This must happen first so LoggerConfig.print_debug is set before loggers are created
+_print_debug = "--print-debug" in sys.argv
+
+from webserver.logger.config import LoggerConfig
+
+LoggerConfig.print_debug = _print_debug
+
 import errno
 import json
 import os
@@ -44,6 +54,7 @@ runtime_manager = RuntimeManager(
     runtime_path="./build/plc_main",
     plc_socket="/run/runtime/plc_runtime.socket",
     log_socket="/run/runtime/log_runtime.socket",
+    print_debug=_print_debug,
 )
 
 runtime_manager.start()
@@ -316,7 +327,7 @@ def run_https():
     # to handle EAGAIN/EWOULDBLOCK errors that cause "Resource temporarily unavailable"
     is_linux = platform.system() == "Linux"
     if not is_linux:
-        print(f"Non-Linux platform detected ({platform.system()}). Patching recv socket...")
+        logger.info(f"Non-Linux platform detected ({platform.system()}). Patching recv socket...")
         _orig_recv = ssl.SSLSocket.recv
 
         def _patched_recv(self, buflen, flags=0):
@@ -336,9 +347,7 @@ def run_https():
         # Check if certificate exists. If not, generate one
         if not os.path.exists(CERT_FILE) or not os.path.exists(KEY_FILE):
             # logger.info("Generating https certificate...")
-            print(
-                "Generating https certificate..."
-            )  # TODO: remove this temporary print once logger is functional again
+            logger.info("Generating https certificate...")
             cert_gen.generate_self_signed_cert(cert_file=CERT_FILE, key_file=KEY_FILE)
         else:
             logger.warning("Credentials already generated!")

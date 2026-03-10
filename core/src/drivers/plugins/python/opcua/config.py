@@ -21,9 +21,9 @@ if _parent_dir not in sys.path:
 
 # Import logging (handle both package and direct loading)
 try:
-    from .opcua_logging import log_info, log_error, log_warn
+    from .opcua_logging import log_debug, log_error, log_info, log_warn
 except ImportError:
-    from opcua_logging import log_info, log_error, log_warn
+    from opcua_logging import log_debug, log_error, log_info, log_warn
 
 from shared.plugin_config_decode.opcua_config_model import (
     OpcuaConfig,
@@ -64,12 +64,12 @@ def load_config(config_path: str) -> Optional[OpcuaConfig]:
         # Return first plugin's config (single-server approach)
         config = master_config.plugins[0].config
 
-        log_info(f"Configuration loaded from {config_path}")
-        log_info(f"Server: {config.server.name}")
-        log_info(f"Endpoint: {config.server.endpoint_url}")
-        log_info(f"Variables: {len(config.address_space.variables)}")
-        log_info(f"Structures: {len(config.address_space.structures)}")
-        log_info(f"Arrays: {len(config.address_space.arrays)}")
+        log_debug(f"Configuration loaded from {config_path}")
+        log_debug(f"Server: {config.server.name}")
+        log_debug(f"Endpoint: {config.server.endpoint_url}")
+        log_debug(f"Variables: {len(config.address_space.variables)}")
+        log_debug(f"Structures: {len(config.address_space.structures)}")
+        log_debug(f"Arrays: {len(config.address_space.arrays)}")
 
         return config
 

@@ -149,7 +149,7 @@ class OpcuaServerManager:
                 return
 
             # Run main loop
-            log_info("Server running, entering main loop...")
+            log_debug("Server running, entering main loop...")
             await self._main_loop()
 
         except Exception as e:
@@ -164,7 +164,7 @@ class OpcuaServerManager:
 
         Sets running flag to False and waits for main loop to exit.
         """
-        log_info("Stop requested...")
+        log_debug("Stop requested...")
         self.running = False
 
     async def _setup_server(self) -> bool:
@@ -194,7 +194,7 @@ class OpcuaServerManager:
                 )
                 self.server.set_endpoint(normalized_endpoint)
                 self._client_endpoints = suggest_client_endpoints(normalized_endpoint)
-                log_info(f"Server endpoint set to: {normalized_endpoint}")
+                log_debug(f"Server endpoint set to: {normalized_endpoint}")
             except Exception as e:
                 log_warn(f"Endpoint normalization failed, using raw URL: {e}")
                 self.server.set_endpoint(self.config.server.endpoint_url)
@@ -219,13 +219,13 @@ class OpcuaServerManager:
 
             # Initialize the server
             await self.server.init()
-            log_info("OPC-UA server initialized")
+            log_debug("OPC-UA server initialized")
 
             # Register namespace (AFTER init)
             self.namespace_idx = await self.server.register_namespace(
                 self.config.address_space.namespace_uri
             )
-            log_info(
+            log_debug(
                 f"Registered namespace: {self.config.address_space.namespace_uri} "
                 f"(index: {self.namespace_idx})"
             )
@@ -240,7 +240,7 @@ class OpcuaServerManager:
                 build_date=datetime.now()
             )
 
-            log_info("OPC-UA server setup completed successfully")
+            log_debug("OPC-UA server setup completed successfully")
             return True
 
         except Exception as e:
@@ -267,10 +267,10 @@ class OpcuaServerManager:
 
             # Print alternative endpoints for client connection
             if self._client_endpoints:
-                log_info("Alternative client endpoints:")
+                log_debug("Alternative client endpoints:")
                 for scenario, endpoint in self._client_endpoints.items():
                     if endpoint:
-                        log_info(f"  {scenario}: {endpoint}")
+                        log_debug(f"  {scenario}: {endpoint}")
 
             return True
 
@@ -302,7 +302,7 @@ class OpcuaServerManager:
                 try:
                     await asyncio.sleep(cycle_time)
                 except asyncio.CancelledError:
-                    log_info("Main loop cancelled")
+                    log_debug("Main loop cancelled")
                     break
 
     async def _cleanup(self) -> None:
@@ -355,7 +355,7 @@ class OpcuaServerManager:
             self.node_permissions = self.address_space_builder.node_permissions
             self.nodeid_to_variable = self.address_space_builder.nodeid_to_variable
 
-            log_info(f"Address space created with {len(self.variable_nodes)} nodes")
+            log_debug(f"Address space created with {len(self.variable_nodes)} nodes")
             return True
 
         except Exception as e:
@@ -385,7 +385,7 @@ class OpcuaServerManager:
                 log_warn("Sync manager initialization failed - sync may be limited")
                 # Don't fail completely - sync manager can still work with batch ops
 
-            log_info("Synchronization manager initialized")
+            log_debug("Synchronization manager initialized")
             return True
 
         except Exception as e:
@@ -406,7 +406,7 @@ class OpcuaServerManager:
         try:
             # Only register callbacks if we have nodes with permissions
             if not self.node_permissions:
-                log_info("No node permissions configured - skipping callback registration")
+                log_debug("No node permissions configured - skipping callback registration")
                 return True
 
             self.callback_handler = PermissionCallbackHandler(
@@ -418,7 +418,7 @@ class OpcuaServerManager:
                 log_warn("Callback registration returned False")
                 return False
 
-            log_info("Permission callback handler initialized")
+            log_debug("Permission callback handler initialized")
             return True
 
         except Exception as e:
@@ -433,17 +433,17 @@ class OpcuaServerManager:
     async def debug_endpoints(self) -> None:
         """Debug method to verify endpoint configuration."""
         try:
-            log_info("=== ENDPOINT VERIFICATION ===")
+            log_debug("=== ENDPOINT VERIFICATION ===")
             endpoints = await self.server.get_endpoints()
-            log_info(f"Total endpoints created: {len(endpoints)}")
+            log_debug(f"Total endpoints created: {len(endpoints)}")
 
             for i, endpoint in enumerate(endpoints):
-                log_info(f"Endpoint {i+1}:")
-                log_info(f"  URL: {endpoint.EndpointUrl}")
-                log_info(f"  Security Policy: {endpoint.SecurityPolicyUri}")
-                log_info(f"  Security Mode: {endpoint.SecurityMode}")
-                log_info(f"  User Tokens: {len(endpoint.UserIdentityTokens)}")
+                log_debug(f"Endpoint {i+1}:")
+                log_debug(f"  URL: {endpoint.EndpointUrl}")
+                log_debug(f"  Security Policy: {endpoint.SecurityPolicyUri}")
+                log_debug(f"  Security Mode: {endpoint.SecurityMode}")
+                log_debug(f"  User Tokens: {len(endpoint.UserIdentityTokens)}")
 
-            log_info("=== END ENDPOINT VERIFICATION ===")
+            log_debug("=== END ENDPOINT VERIFICATION ===")
         except Exception as e:
             log_error(f"Error during endpoint verification: {e}")

@@ -35,22 +35,41 @@ void handle_sigint(int sig)
 
 int main(int argc, char *argv[])
 {
-    // Check for --print-logs argument
+    bool print_debug = false;
+    bool safe_mode   = false;
+
+    // Check for command line arguments
     for (int i = 1; i < argc; i++)
     {
         if (strcmp(argv[i], "--print-logs") == 0)
         {
             print_logs = true;
-            break;
+        }
+        else if (strcmp(argv[i], "--print-debug") == 0)
+        {
+            print_debug = true;
+        }
+        else if (strcmp(argv[i], "--safe-mode") == 0)
+        {
+            safe_mode = true;
         }
     }
 
     // Initialize logging system
-    log_set_level(LOG_LEVEL_DEBUG);
+    // Only enable debug level logging if --print-debug flag is passed
+    if (print_debug)
+    {
+        log_set_level(LOG_LEVEL_DEBUG);
+    }
 
     if (log_init(LOG_SOCKET_PATH) < 0)
     {
-        fprintf(stderr, "Failed to initialize logging system\n");
+        time_t now = time(NULL);
+        struct tm t;
+        gmtime_r(&now, &t);
+        char time_buf[20];
+        strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", &t);
+        fprintf(stderr, "[%s] [ERROR] Failed to initialize logging system\n", time_buf);
         return -1;
     }
 
@@ -78,45 +97,47 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    // Start PLC
-    if (plc_set_state(PLC_STATE_RUNNING) != true)
-    {
-        log_error("Failed to set PLC state to RUNNING");
-    }
-
-    // Initialize plugin driver system
+    // Initialize plugin driver system BEFORE loading the PLC program.
+    // plc_set_state(RUNNING) triggers load_plc_program() which uses the plugin
+    // driver to update config and re-init plugins, and plc_cycle_thread() calls
+    // plugin_driver_start() after image tables are populated.
     plugin_driver = plugin_driver_create();
     if (plugin_driver)
     {
         // Make plugin driver available to unix socket for PLUGIN_CMD routing
         unix_socket_set_plugin_driver(plugin_driver);
         log_info("[PLUGIN]: Plugin driver system created");
-        // Load plugin configuration
         if (plugin_driver_load_config(plugin_driver, "./plugins.conf") == 0)
         {
-            // Start plugins
             plugin_driver_init(plugin_driver);
-            plugin_driver_start(plugin_driver);
-            // Make plugin driver available to unix socket for PLUGIN_CMD routing
-            // only after all plugins are fully initialized and started.
-            // The unix socket handler checks for NULL g_plugin_driver, so
-            // commands arriving during init get a clean error response.
-            unix_socket_set_plugin_driver(plugin_driver);
-            log_info("[PLUGIN]: Plugin driver system initialized");
+            log_info("[PLUGIN]: All plugins initialized (not started)");
         }
         else
         {
             log_error("[PLUGIN]: Failed to load plugin configuration");
-            // Release the Python GIL if Python was initialized during plugin loading.
-            // This prevents a deadlock where the main thread holds the GIL forever
-            // while sleeping, blocking other threads (like the unix socket thread)
-            // from using Python when handling commands like START.
-            if (Py_IsInitialized())
-            {
-                PyEval_SaveThread();
-                log_info("[PLUGIN]: Released Python GIL after failed plugin load");
-            }
         }
+
+        // Release the Python GIL if Python was initialized during plugin loading.
+        // This prevents a deadlock where the main thread holds the GIL forever
+        // while sleeping, blocking other threads (like the unix socket thread)
+        // from using Python when handling commands like START.
+        if (Py_IsInitialized())
+        {
+            PyEval_SaveThread();
+            log_info("[PLUGIN]: Released Python GIL");
+        }
+    }
+
+    // Start PLC (skip in safe mode to allow program upload without loading the
+    // faulty program that may have caused repeated crashes)
+    if (safe_mode)
+    {
+        log_info("Runtime started in SAFE MODE - PLC program will not be loaded");
+        log_info("Upload a corrected program to recover");
+    }
+    else if (plc_set_state(PLC_STATE_RUNNING) != true)
+    {
+        log_error("Failed to set PLC state to RUNNING");
     }
 
     while (keep_running)

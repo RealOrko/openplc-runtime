@@ -206,5 +206,5 @@ setup_plugin_venvs() {
 setup_plugin_venvs
 setup_runtime_venv
 
-# Start the PLC webserver
-"$OPENPLC_DIR/venvs/runtime/bin/python3" -m "webserver.app"
+# Start the PLC webserver (forward all arguments)
+"$OPENPLC_DIR/venvs/runtime/bin/python3" -m "webserver.app" "$@"

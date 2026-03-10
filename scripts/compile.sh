@@ -46,6 +46,26 @@ if [ ! -d "$BUILD_PATH" ]; then
     exit 1
 fi
 
+# On Cygwin/MSYS2, TCP/UDP communication blocks are not supported (the PE
+# loader cannot resolve symbols from the host executable at dlopen time).
+# Provide no-op stubs so programs using these blocks still compile and run
+# — the blocks simply return -1 (failure) for every operation.
+EXTRA_OBJS=""
+case "$(uname -s)" in
+    CYGWIN*|MSYS*|MINGW*)
+        cat > "$BUILD_PATH/comm_stubs.c" << 'STUB'
+#include <stdint.h>
+#include <stddef.h>
+int connect_to_tcp_server(uint8_t *a, uint16_t b, int c) { (void)a; (void)b; (void)c; return -1; }
+int send_tcp_message(uint8_t *a, size_t b, int c) { (void)a; (void)b; (void)c; return -1; }
+int receive_tcp_message(uint8_t *a, size_t b, int c) { (void)a; (void)b; (void)c; return -1; }
+int close_tcp_connection(int a) { (void)a; return -1; }
+STUB
+        gcc $FLAGS -c "$BUILD_PATH/comm_stubs.c" -o "$BUILD_PATH/comm_stubs.o"
+        EXTRA_OBJS="$BUILD_PATH/comm_stubs.o"
+        ;;
+esac
+
 # Compile objects into build/
 echo "[INFO] Compiling Config0.c..."
 gcc $FLAGS -I "$LIB_PATH" -I "$PYTHON_INCLUDE_PATH" -include iec_python.h -c "$SRC_PATH/Config0.c" -o "$BUILD_PATH/Config0.o"
@@ -64,4 +84,4 @@ gcc $FLAGS -I "core/src/plc_app" -c "$PYTHON_LOADER_SRC" -o "$BUILD_PATH/python_
 echo "[INFO] Linking shared library..."
 g++ $FLAGS -shared -o "$BUILD_PATH/new_libplc.so" "$BUILD_PATH/Config0.o" \
     "$BUILD_PATH/Res0.o" "$BUILD_PATH/debug.o" "$BUILD_PATH/glueVars.o" \
-    "$BUILD_PATH/c_blocks_code.o" "$BUILD_PATH/python_loader.o" -lpthread -lrt
+    "$BUILD_PATH/c_blocks_code.o" "$BUILD_PATH/python_loader.o" $EXTRA_OBJS -lpthread -lrt

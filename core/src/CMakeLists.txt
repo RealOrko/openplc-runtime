@@ -43,6 +43,7 @@ add_executable(plc_main
     ${CMAKE_SOURCE_DIR}/core/src/drivers/plugin_utils.c
     ${CMAKE_SOURCE_DIR}/core/src/plc_app/unix_socket.c
     ${CMAKE_SOURCE_DIR}/core/src/plc_app/debug_handler.c
+    ${CMAKE_SOURCE_DIR}/core/src/plc_app/client_tcp_udp.c
 )
 
 # Link against shared library
@@ -51,6 +52,10 @@ target_link_libraries(plc_main
     pthread
     ${PYTHON_LIBRARIES}
 )
+
+# Export symbols from the executable so that dlopen'd PLC shared libraries
+# can resolve functions provided by the runtime (e.g. TCP communication blocks)
+target_link_options(plc_main PRIVATE -rdynamic)
 
 # Ensure executable can find shared library at runtime
 set_target_properties(plc_main PROPERTIES

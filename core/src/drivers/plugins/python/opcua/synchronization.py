@@ -135,8 +135,8 @@ class SynchronizationManager:
                 if var_node.access_mode == "readwrite"
             }
 
-            log_info(f"Sync manager: {len(self._readwrite_nodes)} readwrite nodes, "
-                     f"{len(self.variable_nodes) - len(self._readwrite_nodes)} readonly nodes")
+            log_debug(f"Sync manager: {len(self._readwrite_nodes)} readwrite nodes, "
+                      f"{len(self.variable_nodes) - len(self._readwrite_nodes)} readonly nodes")
 
             # Initialize metadata cache for direct memory access
             if self.variable_nodes:
@@ -157,9 +157,9 @@ class SynchronizationManager:
                 self._direct_memory_access_enabled = bool(self.variable_metadata)
 
                 if self._direct_memory_access_enabled:
-                    log_info(f"Direct memory access enabled for {len(self.variable_metadata)} indices")
+                    log_debug(f"Direct memory access enabled for {len(self.variable_metadata)} indices")
                 else:
-                    log_info("Using batch operations for sync")
+                    log_debug("Using batch operations for sync")
 
             return True
 
@@ -193,9 +193,9 @@ class SynchronizationManager:
             self._direct_memory_access_enabled = bool(self.variable_metadata)
 
             if self._direct_memory_access_enabled:
-                log_info(f"Direct memory access enabled for {len(self.variable_metadata)} indices")
+                log_debug(f"Direct memory access enabled for {len(self.variable_metadata)} indices")
             else:
-                log_info("Using batch operations for sync")
+                log_debug("Using batch operations for sync")
 
             # Clear value cache to force full sync on next cycle
             self.opcua_value_cache.clear()
@@ -254,7 +254,7 @@ class SynchronizationManager:
                 await asyncio.sleep(cycle_time_seconds)
 
             except asyncio.CancelledError:
-                log_info("Sync loop cancelled")
+                log_debug("Sync loop cancelled")
                 break
             except Exception as e:
                 log_error(f"Error in sync loop: {e}")

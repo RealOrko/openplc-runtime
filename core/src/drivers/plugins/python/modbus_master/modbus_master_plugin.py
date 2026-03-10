@@ -866,7 +866,7 @@ def init(args_capsule):
     Initialize the Modbus Master plugin.
     This function is called once when the plugin is loaded.
     """
-    global runtime_args, modbus_master_config, safe_buffer_accessor, logger
+    global runtime_args, logger
 
     # Initialize logger early (without runtime_args for now)
     logger = PluginLogger("MODBUS_MASTER", None)
@@ -882,6 +882,31 @@ def init(args_capsule):
         # Re-initialize logger with runtime_args for central logging
         logger = PluginLogger("MODBUS_MASTER", runtime_args)
         logger.info("Runtime arguments extracted successfully")
+
+        return True
+
+    except Exception as e:
+        logger.error(f"Error during initialization: {e}")
+        traceback.print_exc()
+        return False
+
+
+def start_loop():
+    """
+    Start the main loop for all configured Modbus devices.
+    This function is called after successful initialization.
+
+    TCP devices: One thread per device (ModbusSlaveDevice)
+    RTU devices: One thread per serial bus (ModbusRtuBusHandler), supporting multi-drop
+    """
+    global slave_threads, modbus_master_config, safe_buffer_accessor, logger
+
+    logger.info("Starting main loop...")
+
+    try:
+        if not runtime_args:
+            logger.error("Plugin not properly initialized")
+            return False
 
         # Create safe buffer accessor
         safe_buffer_accessor = SafeBufferAccess(runtime_args)
@@ -905,33 +930,6 @@ def init(args_capsule):
 
         device_count = len(modbus_master_config.devices)
         logger.info(f"Configuration loaded successfully: {device_count} device(s)")
-
-        return True
-
-    except Exception as e:
-        logger.error(f"Error during initialization: {e}")
-        traceback.print_exc()
-        return False
-
-
-def start_loop():
-    """
-    Start the main loop for all configured Modbus devices.
-    This function is called after successful initialization.
-
-    TCP devices: One thread per device (ModbusSlaveDevice)
-    RTU devices: One thread per serial bus (ModbusRtuBusHandler), supporting multi-drop
-    """
-    # pylint: disable=global-variable-not-assigned
-    global slave_threads, modbus_master_config, safe_buffer_accessor, logger
-    # pylint: enable=global-variable-not-assigned
-
-    logger.info("Starting main loop...")
-
-    try:
-        if not modbus_master_config or not safe_buffer_accessor:
-            logger.error("Plugin not properly initialized")
-            return False
 
         # Separate TCP and RTU devices
         tcp_devices = [d for d in modbus_master_config.devices if d.transport == "tcp"]

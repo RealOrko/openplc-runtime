@@ -23,11 +23,11 @@ if _parent_dir not in sys.path:
 
 # Import local modules (handle both package and direct loading)
 try:
-    from .opcua_logging import log_info, log_warn, log_error
+    from .opcua_logging import log_debug, log_error, log_info, log_warn
     from .opcua_types import VariableNode
     from .opcua_utils import map_plc_to_opcua_type, convert_value_for_opcua
 except ImportError:
-    from opcua_logging import log_info, log_warn, log_error
+    from opcua_logging import log_debug, log_error, log_info, log_warn
     from opcua_types import VariableNode
     from opcua_utils import map_plc_to_opcua_type, convert_value_for_opcua
 
@@ -114,7 +114,7 @@ class AddressSpaceBuilder:
                     log_error(f"Error creating array {arr.node_id}: {e}")
                     traceback.print_exc()
 
-            log_info(f"Created {len(self.variable_nodes)} variable nodes")
+            log_debug(f"Created {len(self.variable_nodes)} variable nodes")
             return True
 
         except Exception as e:
@@ -165,9 +165,9 @@ class AddressSpaceBuilder:
         has_write_permission = self._check_write_permission(var.permissions)
         if has_write_permission:
             await node.set_writable()
-            log_info(f"Node {var.node_id} set as writable")
+            log_debug(f"Node {var.node_id} set as writable")
         else:
-            log_info(f"Node {var.node_id} set as read-only")
+            log_debug(f"Node {var.node_id} set as read-only")
 
         # Store node mapping
         access_mode = "readwrite" if has_write_permission else "readonly"
@@ -183,7 +183,7 @@ class AddressSpaceBuilder:
         self.node_permissions[var.node_id] = var.permissions
         self.nodeid_to_variable[node.nodeid] = var.node_id
 
-        log_info(f"Created variable {var.node_id} (index: {var.index})")
+        log_debug(f"Created variable {var.node_id} (index: {var.index})")
 
     async def _create_struct(
         self,
@@ -223,7 +223,7 @@ class AddressSpaceBuilder:
         for field in struct.fields:
             await self._create_struct_field(struct_obj, struct.node_id, field)
 
-        log_info(f"Created struct {struct.node_id} with {len(struct.fields)} fields")
+        log_debug(f"Created struct {struct.node_id} with {len(struct.fields)} fields")
 
     async def _create_struct_field(
         self,
@@ -266,7 +266,7 @@ class AddressSpaceBuilder:
             for nested_field in field.fields:
                 await self._create_struct_field(field_obj, field_node_id, nested_field)
 
-            log_info(f"Created nested object {field_node_id} with {len(field.fields)} fields")
+            log_debug(f"Created nested object {field_node_id} with {len(field.fields)} fields")
             return
 
         # This is a leaf field - create a Variable node
@@ -310,10 +310,10 @@ class AddressSpaceBuilder:
             self.node_permissions[field_node_id] = field.permissions
             self.nodeid_to_variable[node.nodeid] = field_node_id
 
-            log_info(f"Created field {field_node_id} (index: {field.index})")
+            log_debug(f"Created field {field_node_id} (index: {field.index})")
         else:
             # Complex types (FBs, nested structs) have null indices - only leaf fields have indices
-            log_info(f"Field {field_node_id} is a complex type (no index) - skipping node mapping")
+            log_debug(f"Field {field_node_id} is a complex type (no index) - skipping node mapping")
 
     async def _create_array(
         self,
@@ -383,7 +383,7 @@ class AddressSpaceBuilder:
         self.node_permissions[arr.node_id] = arr.permissions
         self.nodeid_to_variable[node.nodeid] = arr.node_id
 
-        log_info(f"Created array {arr.node_id}[{arr.length}] (index: {arr.index})")
+        log_debug(f"Created array {arr.node_id}[{arr.length}] (index: {arr.index})")
 
     def _check_write_permission(self, permissions: VariablePermissions) -> bool:
         """

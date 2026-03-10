@@ -8,6 +8,19 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
+#include <time.h>
+
+/* Helper macro for formatted stderr output matching human-readable log format */
+#define PLUGIN_LOGGER_STDERR(level, fmt, ...)                                                      \
+    do                                                                                             \
+    {                                                                                              \
+        time_t now = time(NULL);                                                                   \
+        struct tm t;                                                                               \
+        gmtime_r(&now, &t);                                                                        \
+        char time_buf[20];                                                                         \
+        strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", &t);                             \
+        fprintf(stderr, "[%s] [%s] " fmt "\n", time_buf, level, ##__VA_ARGS__);                    \
+    } while (0)
 
 /* Maximum size for formatted log messages */
 #define MAX_LOG_MESSAGE_SIZE 1024
@@ -29,7 +42,7 @@ bool plugin_logger_init(plugin_logger_t *logger, const char *plugin_name, void *
 
     if (!plugin_name)
     {
-        fprintf(stderr, "[PLUGIN_LOGGER] Error: plugin_name is NULL\n");
+        PLUGIN_LOGGER_STDERR("ERROR", "Plugin logger init failed: plugin_name is NULL");
         return false;
     }
 
@@ -39,8 +52,8 @@ bool plugin_logger_init(plugin_logger_t *logger, const char *plugin_name, void *
 
     if (!runtime_args)
     {
-        fprintf(stderr, "[%s] Warning: runtime_args is NULL, logging will fall back to printf\n",
-                logger->plugin_name);
+        PLUGIN_LOGGER_STDERR("WARN", "[%s] runtime_args is NULL, logging will fall back to printf",
+                             logger->plugin_name);
         return true; /* Still return true - logger will fall back to printf */
     }
 
@@ -59,8 +72,8 @@ bool plugin_logger_init(plugin_logger_t *logger, const char *plugin_name, void *
     }
     else
     {
-        fprintf(stderr, "[%s] Warning: Some log functions are NULL, falling back to printf\n",
-                logger->plugin_name);
+        PLUGIN_LOGGER_STDERR("WARN", "[%s] Some log functions are NULL, falling back to printf",
+                             logger->plugin_name);
     }
 
     return true;
@@ -88,7 +101,13 @@ static void plugin_logger_log(plugin_logger_t *logger, plugin_log_func_t log_fun
     }
     else
     {
-        printf("[%s] [%s] %s\n", logger->plugin_name, level, message);
+        /* Fallback: format to match human-readable log format */
+        time_t now = time(NULL);
+        struct tm t;
+        gmtime_r(&now, &t);
+        char time_buf[20];
+        strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", &t);
+        printf("[%s] [%s] [%s] %s\n", time_buf, level, logger->plugin_name, message);
     }
 }
 

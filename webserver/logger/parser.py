@@ -9,9 +9,15 @@ LOG_PATTERN = re.compile(r'^\[(?P<level>\w+)\]\s*(?P<message>.*)$')
 LEVEL_MAP = {
     "DEBUG": logging.DEBUG,
     "INFO": logging.INFO,
+    "WARN": logging.WARNING,
     "WARNING": logging.WARNING,
     "ERROR": logging.ERROR,
     "CRITICAL": logging.CRITICAL,
+}
+
+# Normalize non-standard level names to Python conventions
+LEVEL_NORMALIZE = {
+    "WARN": "WARNING",
 }
 
 
@@ -37,7 +43,9 @@ class LogParser:
                 # Preserve incoming JSON fields, but ensure timestamp is present
                 parsed.setdefault("timestamp", str(timestamp))
                 level_name = parsed.get("level", "INFO")
+                level_name = LEVEL_NORMALIZE.get(level_name, level_name)
                 level = LEVEL_MAP.get(level_name, logging.INFO)
+                parsed["level"] = level_name
                 log_entry = parsed
             else:
                 raise ValueError("Not a valid log JSON dict")
@@ -46,6 +54,7 @@ class LogParser:
             match = LOG_PATTERN.match(sline)
             if match:
                 level_name = match["level"]
+                level_name = LEVEL_NORMALIZE.get(level_name, level_name)
                 level = LEVEL_MAP.get(level_name, logging.INFO)
                 message = match["message"]
             else:

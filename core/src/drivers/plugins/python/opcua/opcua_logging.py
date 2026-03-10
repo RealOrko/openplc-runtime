@@ -5,6 +5,7 @@ This module provides a singleton logger that integrates with the OpenPLC
 runtime logging system while providing fallback to standard output.
 """
 
+from datetime import datetime, timezone
 from typing import Optional, Callable
 import sys
 
@@ -69,7 +70,8 @@ class OpcuaLogger:
                 return
             except Exception:
                 pass
-        print(f"[OPCUA INFO] {message}", file=sys.stdout)
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{timestamp}] [INFO] [OPCUA] {message}", file=sys.stdout)
     
     def warn(self, message: str) -> None:
         """Log a warning message."""
@@ -79,7 +81,8 @@ class OpcuaLogger:
                 return
             except Exception:
                 pass
-        print(f"[OPCUA WARN] {message}", file=sys.stderr)
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{timestamp}] [WARN] [OPCUA] {message}", file=sys.stderr)
     
     def error(self, message: str) -> None:
         """Log an error message."""
@@ -89,7 +92,8 @@ class OpcuaLogger:
                 return
             except Exception:
                 pass
-        print(f"[OPCUA ERROR] {message}", file=sys.stderr)
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{timestamp}] [ERROR] [OPCUA] {message}", file=sys.stderr)
 
     def debug(self, message: str) -> None:
         """Log a debug message."""
@@ -99,7 +103,8 @@ class OpcuaLogger:
                 return
             except Exception:
                 pass
-        print(f"[OPCUA DEBUG] {message}", file=sys.stdout)
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{timestamp}] [DEBUG] [OPCUA] {message}", file=sys.stdout)
 
 
 # Module-level convenience functions

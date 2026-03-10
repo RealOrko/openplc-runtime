@@ -125,9 +125,9 @@ if _parent_dir not in sys.path:
 
 # Import logging (handle both package and direct loading)
 try:
-    from .opcua_logging import log_error, log_info, log_warn
+    from .opcua_logging import log_debug, log_error, log_info, log_warn
 except ImportError:
-    from opcua_logging import log_info, log_warn, log_error
+    from opcua_logging import log_debug, log_error, log_info, log_warn
 
 from shared.plugin_config_decode.opcua_config_model import OpcuaConfig  # noqa: E402
 
@@ -389,7 +389,7 @@ class OpenPLCUserManager(UserManager):
                 )
                 return None
 
-        log_info(f"Authentication attempt: method={auth_method}")
+        log_debug(f"Authentication attempt: method={auth_method}")
 
         # Find a security profile that supports this authentication method
         profile = self._find_profile_by_auth_method(auth_method)
@@ -403,7 +403,7 @@ class OpenPLCUserManager(UserManager):
                 self.rate_limiter.record_attempt(rate_limit_id, success=False)
             return None
 
-        log_info(f"Using security profile '{profile.name}' for {auth_method} authentication")
+        log_debug(f"Using security profile '{profile.name}' for {auth_method} authentication")
 
         # Authenticate based on method
         user = None
@@ -425,7 +425,7 @@ class OpenPLCUserManager(UserManager):
         if user:
             # Store OpenPLC role as attribute for permission callbacks
             user.openplc_role = openplc_role
-            log_info(
+            log_debug(
                 f"User '{user.name or 'anonymous'}' authenticated successfully "
                 f"using '{auth_method}' method for profile '{profile.name}' "
                 f"(role: {openplc_role})"
@@ -506,7 +506,7 @@ class OpenPLCUserManager(UserManager):
         openplc_role = self._user_roles.get(f"cert:{cert_id}", "viewer")
         asyncua_role = self.ROLE_MAPPING.get(openplc_role, UserRole.User)
 
-        log_info(f"Certificate authenticated as user with role '{openplc_role}'")
+        log_debug(f"Certificate authenticated as user with role '{openplc_role}'")
 
         # Return asyncua User object
         return User(role=asyncua_role, name=f"cert:{cert_id}"), openplc_role
@@ -551,7 +551,7 @@ class OpenPLCUserManager(UserManager):
             for cert_info in self.config.security.trusted_client_certificates:
                 config_fingerprint = self._pem_to_fingerprint(cert_info["pem"])
                 if config_fingerprint and client_fingerprint == config_fingerprint:
-                    log_info(
+                    log_debug(
                         f"Certificate matched: {cert_info['id']} "
                         f"(fingerprint: {client_fingerprint[:16]}...)"
                     )
@@ -673,7 +673,7 @@ class OpenPLCUserManager(UserManager):
             if not profile.enabled:
                 continue
             if auth_method in profile.auth_methods:
-                log_info(f"Found profile '{profile.name}' supporting {auth_method}")
+                log_debug(f"Found profile '{profile.name}' supporting {auth_method}")
                 return profile
 
         log_warn(f"No enabled profile found supporting authentication method: {auth_method}")

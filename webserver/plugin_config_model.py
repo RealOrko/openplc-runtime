@@ -12,6 +12,10 @@ import os
 import glob
 import shutil
 
+from webserver.logger import get_logger
+
+logger, _ = get_logger(__name__)
+
 
 class PluginType(IntEnum):
     """Plugin type enumeration."""
@@ -122,18 +126,18 @@ class PluginsConfiguration:
         # If plugins.conf doesn't exist, copy from plugins_default.conf
         if not os.path.exists(file_path):
             default_file = "plugins_default.conf"
-            print(f"[PLUGIN]: Config file {file_path} not found, copying from {default_file}")
+            logger.info(f"Config file {file_path} not found, copying from {default_file}")
             
             if os.path.exists(default_file):
                 try:
                     import shutil
                     shutil.copy2(default_file, file_path)
-                    print(f"[PLUGIN]: Successfully copied {default_file} to {file_path}")
+                    logger.info(f"Successfully copied {default_file} to {file_path}")
                 except Exception as e:
-                    print(f"[PLUGIN]: Failed to copy {default_file}: {e}")
+                    logger.error(f"Failed to copy {default_file}: {e}")
                     return config
             else:
-                print(f"[PLUGIN]: Default config file {default_file} not found")
+                logger.error(f"Default config file {default_file} not found")
                 return config
         
         if not os.path.exists(file_path):
@@ -155,7 +159,7 @@ class PluginsConfiguration:
                     
         except Exception as e:
             # Log error but continue with empty configuration
-            print(f"Warning: Failed to load plugin configuration from {file_path}: {e}")
+            logger.warning(f"Failed to load plugin configuration from {file_path}: {e}")
             
         return config
     
@@ -199,7 +203,7 @@ class PluginsConfiguration:
             return True
             
         except Exception as e:
-            print(f"Error: Failed to save plugin configuration to {file_path}: {e}")
+            logger.error(f"Failed to save plugin configuration to {file_path}: {e}")
             return False
     
     def get_plugin(self, name: str) -> Optional[PluginConfig]:
