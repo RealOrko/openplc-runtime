@@ -8,12 +8,12 @@
 #include "scan_cycle_manager.h"
 #include "utils/utils.h"
 
-// CLOCK_MONOTONIC_RAW is Linux-specific, use CLOCK_MONOTONIC on other platforms
-#if defined(__CYGWIN__) || defined(__MSYS__) || !defined(CLOCK_MONOTONIC_RAW)
+// Use CLOCK_MONOTONIC everywhere to match the clock used by sleep_until()
+// (clock_nanosleep with CLOCK_MONOTONIC). Using CLOCK_MONOTONIC_RAW here
+// would cause progressive drift against the sleep clock due to NTP slew
+// adjustments, eventually leading to false overrun detection after ~30-60
+// minutes of continuous operation.
 #define OPENPLC_CLOCK CLOCK_MONOTONIC
-#else
-#define OPENPLC_CLOCK CLOCK_MONOTONIC_RAW
-#endif
 
 static uint64_t expected_start_us  = 0;
 static uint64_t last_start_us      = 0;
