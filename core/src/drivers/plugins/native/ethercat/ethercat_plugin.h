@@ -17,8 +17,14 @@
  *
  * Architecture:
  *   Process data exchange runs synchronously inside the PLC scan cycle
- *   via the cycle_start() hook. No separate EtherCAT thread is used.
- *   The bus cycle is fully synchronized with the PLC common_ticktime.
+ *   via the cycle_start() hook. The bus cycle is fully synchronized with
+ *   the PLC common_ticktime.
+ *
+ *   A background monitor thread (enabled by ECAT_ENABLE_MONITOR_THREAD)
+ *   handles slave state checking and recovery outside the scan cycle,
+ *   using a cooperative flag protocol to avoid SOEM thread-safety issues.
+ *   When the monitor needs SOEM access, the PLC thread skips one exchange
+ *   cycle (stale I/O data) rather than blocking.
  *
  * State machine: STOPPED -> IDLE -> SCANNING -> CONFIGURING ->
  *                TRANSITIONING -> OPERATIONAL <-> RECOVERING -> ERROR

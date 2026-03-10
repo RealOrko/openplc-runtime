@@ -227,11 +227,27 @@ ecat_data_type_t ecat_parse_data_type(const char *str);
 /** Maximum number of recovery attempts before transitioning to ERROR state */
 #define ECAT_MAX_RECOVERY_ATTEMPTS  5
 
-/** Number of EtherCAT cycles between slave state checks */
-#define ECAT_STATE_CHECK_INTERVAL   1000
-
 /** Number of consecutive WKC errors before triggering recovery */
 #define ECAT_WKC_ERROR_THRESHOLD    3
+
+/**
+ * Enable the background monitor thread for slave state checking and recovery.
+ * When enabled, a low-priority thread periodically calls ecx_readstate() and
+ * attempt_recovery() outside the PLC scan cycle, preventing overruns.
+ * When disabled, no state monitoring or automatic recovery is performed
+ * at runtime (the bus runs open-loop after reaching OPERATIONAL).
+ *
+ * Define to 0 to disable, 1 to enable.
+ */
+#ifndef ECAT_ENABLE_MONITOR_THREAD
+#define ECAT_ENABLE_MONITOR_THREAD  1
+#endif
+
+/** Background monitor thread polling interval in milliseconds */
+#define ECAT_MONITOR_INTERVAL_MS    500
+
+/** Timeout in ms to wait for PLC thread to yield SOEM access */
+#define ECAT_SOEM_ACCESS_TIMEOUT_MS 200
 
 /**
  * @brief EtherCAT plugin state machine states
@@ -282,6 +298,7 @@ typedef struct {
     int                 consecutive_wkc_errors;
     int                 recovery_attempts;
     int                 expected_wkc;
+    uint64_t            exchange_skips;
 } ecat_master_status_t;
 
 /**

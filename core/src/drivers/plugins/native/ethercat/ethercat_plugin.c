@@ -152,16 +152,40 @@ static int g_consecutive_wkc_errors = 0;
 static int g_recovery_attempts = 0;
 static uint64_t g_cycle_counter = 0;
 
+#if ECAT_ENABLE_MONITOR_THREAD
 /*
  * =============================================================================
- * Status Snapshot Update (called from PLC scan cycle)
+ * Cooperative SOEM Access Protocol
+ * =============================================================================
+ *
+ * SOEM is NOT thread-safe. The PLC thread and monitor thread must never call
+ * SOEM functions concurrently. Instead of a mutex (which would cause priority
+ * inversion), we use atomic flags for cooperative coordination:
+ *
+ *   Normal:  PLC exchanges data every cycle, monitor sleeps.
+ *   Pause:   Monitor sets pause_requested. PLC sees flag, skips exchange,
+ *            sets paused=true. Monitor does its SOEM work, then clears both.
+ *   Resume:  PLC resumes exchange on the next cycle.
+ *
+ * Worst-case PLC impact: 1 cycle with stale I/O data per monitor interval.
+ */
+static pthread_t g_monitor_thread;
+static _Atomic(bool) g_monitor_running = false;
+static _Atomic(bool) g_soem_pause_requested = false;
+static _Atomic(bool) g_soem_paused = false;
+static _Atomic(uint64_t) g_exchange_skips = 0;
+#endif /* ECAT_ENABLE_MONITOR_THREAD */
+
+/*
+ * =============================================================================
+ * Status Snapshot Update
  * =============================================================================
  */
 
 /**
  * @brief Build and publish a status snapshot from current state
  *
- * Called periodically from cycle_start() in the PLC thread.
+ * Called by the monitor thread (or from start_loop/stop_loop).
  * The lock hold time is just a memcpy of ~5KB.
  */
 static void update_status_snapshot(void)
@@ -174,6 +198,9 @@ static void update_status_snapshot(void)
     snap.expected_wkc = g_expected_wkc;
     snap.consecutive_wkc_errors = g_consecutive_wkc_errors;
     snap.recovery_attempts = g_recovery_attempts;
+#if ECAT_ENABLE_MONITOR_THREAD
+    snap.exchange_skips = atomic_load(&g_exchange_skips);
+#endif
 
     /* Cycle metrics */
     snap.cycle_count = g_diag.cycle_count;
@@ -204,14 +231,19 @@ static void update_status_snapshot(void)
     pthread_mutex_unlock(&g_status_mutex);
 }
 
+#if ECAT_ENABLE_MONITOR_THREAD
 /*
  * =============================================================================
- * Recovery Logic
+ * Recovery Logic (runs in monitor thread, never in PLC scan cycle)
  * =============================================================================
  */
 
 /**
  * @brief Attempt to recover all slaves that are not in OP
+ *
+ * MUST be called only when the PLC thread has yielded SOEM access
+ * (g_soem_paused == true), because these SOEM calls are blocking and
+ * not thread-safe.
  *
  * @return 1 if all slaves back in OP, 0 if some still recovering, -1 on max attempts
  */
@@ -259,7 +291,119 @@ static int attempt_recovery(void)
     return 0;
 }
 
-/* (EtherCAT cycle logic is now inline in cycle_start/cycle_end hooks) */
+/*
+ * =============================================================================
+ * Cooperative SOEM Access Helpers
+ * =============================================================================
+ */
+
+/**
+ * @brief Request exclusive SOEM access from the PLC thread
+ *
+ * Sets the pause request flag and waits for the PLC thread to acknowledge.
+ * The PLC thread checks this flag at the top of cycle_start() and, when set,
+ * skips the SOEM exchange and signals g_soem_paused.
+ *
+ * @param timeout_ms Maximum time to wait for PLC thread acknowledgment
+ * @return true if SOEM access was granted, false on timeout
+ */
+static bool request_soem_access(int timeout_ms)
+{
+    atomic_store(&g_soem_pause_requested, true);
+
+    struct timespec ts = { 0, 1000000 }; /* 1 ms poll interval */
+    int waited_ms = 0;
+    while (!atomic_load(&g_soem_paused) && waited_ms < timeout_ms) {
+        nanosleep(&ts, NULL);
+        waited_ms++;
+    }
+
+    if (!atomic_load(&g_soem_paused)) {
+        atomic_store(&g_soem_pause_requested, false);
+        return false;
+    }
+    return true;
+}
+
+/**
+ * @brief Release exclusive SOEM access, allowing PLC thread to resume exchange
+ */
+static void release_soem_access(void)
+{
+    atomic_store(&g_soem_paused, false);
+    atomic_store(&g_soem_pause_requested, false);
+}
+
+/*
+ * =============================================================================
+ * Background Monitor Thread
+ * =============================================================================
+ */
+
+/**
+ * @brief Background thread for slave state monitoring and recovery
+ *
+ * Runs at default (non-RT) priority. Periodically:
+ *   - Requests exclusive SOEM access (PLC skips 1 exchange cycle)
+ *   - Reads slave states via ecx_readstate()
+ *   - Performs recovery if in RECOVERING state
+ *   - Updates status snapshot for execute_command queries
+ *   - Logs periodic diagnostics
+ *
+ * This keeps all blocking SOEM state/recovery calls OUT of the PLC scan cycle.
+ */
+static void *ecat_monitor_thread(void *arg)
+{
+    (void)arg;
+
+    plugin_logger_info(&g_logger,
+        "EtherCAT monitor thread started (interval=%d ms)",
+        ECAT_MONITOR_INTERVAL_MS);
+
+    while (atomic_load(&g_monitor_running)) {
+        int state = atomic_load(&g_plugin_state);
+
+        if (state == ECAT_STATE_OPERATIONAL) {
+            /* Periodic state check */
+            if (request_soem_access(ECAT_SOEM_ACCESS_TIMEOUT_MS)) {
+                ecat_master_read_states();
+                release_soem_access();
+                update_status_snapshot();
+            }
+
+        } else if (state == ECAT_STATE_RECOVERING) {
+            /* Recovery needs extended SOEM access */
+            if (request_soem_access(ECAT_SOEM_ACCESS_TIMEOUT_MS)) {
+                int result = attempt_recovery();
+                release_soem_access();
+
+                if (result == 1) {
+                    atomic_store(&g_plugin_state, ECAT_STATE_OPERATIONAL);
+                    plugin_logger_info(&g_logger,
+                        "[state: OPERATIONAL] Recovered from error");
+                } else if (result == -1) {
+                    atomic_store(&g_plugin_state, ECAT_STATE_ERROR);
+                    plugin_logger_error(&g_logger,
+                        "EtherCAT entered ERROR state after max recovery attempts");
+                }
+                update_status_snapshot();
+            } else {
+                plugin_logger_warn(&g_logger,
+                    "Could not acquire SOEM access for recovery (PLC not responding?)");
+            }
+        }
+
+        /* Sleep for the monitor interval */
+        struct timespec sleep_ts;
+        sleep_ts.tv_sec = ECAT_MONITOR_INTERVAL_MS / 1000;
+        sleep_ts.tv_nsec = (ECAT_MONITOR_INTERVAL_MS % 1000) * 1000000L;
+        nanosleep(&sleep_ts, NULL);
+    }
+
+    plugin_logger_info(&g_logger, "EtherCAT monitor thread exiting");
+    return NULL;
+}
+#endif /* ECAT_ENABLE_MONITOR_THREAD */
 
 /*
  * =============================================================================
@@ -417,9 +561,24 @@ void start_loop(void)
     ecat_master_exchange_processdata(g_receive_timeout_us);
 
     update_status_snapshot();
+
+#if ECAT_ENABLE_MONITOR_THREAD
+    /* Start background monitor thread for state checks and recovery */
+    atomic_store(&g_soem_pause_requested, false);
+    atomic_store(&g_soem_paused, false);
+    atomic_store(&g_exchange_skips, 0);
+    atomic_store(&g_monitor_running, true);
+
+    if (pthread_create(&g_monitor_thread, NULL, ecat_monitor_thread, NULL) != 0) {
+        plugin_logger_warn(&g_logger,
+            "Failed to create monitor thread - running without state monitoring");
+        atomic_store(&g_monitor_running, false);
+    }
+#endif
+
     plugin_logger_info(&g_logger,
-        "[state: OPERATIONAL] EtherCAT master started (synchronous mode, "
-        "exchange runs inside PLC scan cycle)");
+        "[state: OPERATIONAL] EtherCAT master started (synchronous exchange, "
+        "monitor=%s)", ECAT_ENABLE_MONITOR_THREAD ? "enabled" : "disabled");
 }
 
 /**
@@ -435,6 +594,17 @@ void stop_loop(void)
 
     plugin_logger_info(&g_logger, "Stopping EtherCAT master (current state: %s)...",
                        ecat_state_to_string(state));
+
+#if ECAT_ENABLE_MONITOR_THREAD
+    /* Stop the monitor thread before closing the master */
+    if (atomic_load(&g_monitor_running)) {
+        atomic_store(&g_monitor_running, false);
+        pthread_join(g_monitor_thread, NULL);
+        plugin_logger_debug(&g_logger, "Monitor thread joined");
+    }
+    atomic_store(&g_soem_pause_requested, false);
+    atomic_store(&g_soem_paused, false);
+#endif
 
     /* Log final diagnostics */
     if (g_diag.cycle_count > 0 || g_diag.wkc_error_count > 0) {
@@ -490,10 +660,10 @@ void cleanup(void)
  *   1. Writes PLC outputs (from previous cycle) into the real IOmap
  *   2. Exchanges process data with all slaves via SOEM
  *   3. Reads received inputs from the IOmap into PLC input buffers
- *   4. Handles WKC errors, recovery, and periodic diagnostics
+ *   4. Tracks WKC errors (no blocking SOEM calls)
  *
- * This runs in the PLC thread at the common_ticktime rate, so the
- * EtherCAT bus cycle is fully synchronized with the PLC scan cycle.
+ * All blocking operations (state checks, recovery) run in the background
+ * monitor thread when ECAT_ENABLE_MONITOR_THREAD is enabled.
  */
 void cycle_start(void)
 {
@@ -504,6 +674,16 @@ void cycle_start(void)
     uint8_t *iomap = ecat_master_get_iomap();
     if (!iomap)
         return;
+
+#if ECAT_ENABLE_MONITOR_THREAD
+    /* If the monitor thread needs exclusive SOEM access, yield this cycle.
+     * The PLC keeps running with stale I/O data for one cycle (~us). */
+    if (atomic_load(&g_soem_pause_requested)) {
+        atomic_store(&g_soem_paused, true);
+        atomic_fetch_add(&g_exchange_skips, 1);
+        return;
+    }
+#endif
 
     /* 1. Write PLC outputs to IOmap (from previous cycle's computation) */
     ecat_io_write_outputs(&g_channel_map, iomap, &g_runtime_args);
@@ -521,94 +701,72 @@ void cycle_start(void)
 
     g_cycle_counter++;
 
-    if (state == ECAT_STATE_OPERATIONAL) {
-        /* 4. WKC error check */
-        if (wkc < g_expected_wkc) {
-            g_consecutive_wkc_errors++;
-            g_diag.wkc_error_count++;
-            if (wkc == EC_NOFRAME)
-                g_diag.noframe_count++;
+    /* 4. WKC error tracking (no blocking SOEM calls) */
+    if (wkc < g_expected_wkc) {
+        g_consecutive_wkc_errors++;
+        g_diag.wkc_error_count++;
+        if (wkc == EC_NOFRAME)
+            g_diag.noframe_count++;
 
-            if (g_consecutive_wkc_errors == 1 ||
-                (g_consecutive_wkc_errors % 100) == 0) {
-                plugin_logger_warn(&g_logger,
-                    "WKC error: expected %d, got %d (consecutive: %d, "
-                    "exchange=%llu us)",
-                    g_expected_wkc, wkc, g_consecutive_wkc_errors,
-                    (unsigned long long)(g_diag.exchange_ns / 1000));
-            }
-
-            /* Trigger recovery if threshold exceeded */
-            if (g_consecutive_wkc_errors >= ECAT_WKC_ERROR_THRESHOLD) {
-                plugin_logger_warn(&g_logger,
-                    "WKC error threshold (%d) reached, switching to RECOVERING",
-                    ECAT_WKC_ERROR_THRESHOLD);
-                atomic_store(&g_plugin_state, ECAT_STATE_RECOVERING);
-            }
-        } else {
-            g_consecutive_wkc_errors = 0;
+        if (g_consecutive_wkc_errors == 1 ||
+            (g_consecutive_wkc_errors % 100) == 0) {
+            plugin_logger_warn(&g_logger,
+                "WKC error: expected %d, got %d (consecutive: %d, "
+                "exchange=%llu us)",
+                g_expected_wkc, wkc, g_consecutive_wkc_errors,
+                (unsigned long long)(g_diag.exchange_ns / 1000));
         }
 
-        /* 5. Update diagnostics */
-        g_diag.total_ns = g_diag.exchange_ns;
-        g_diag.cycle_count++;
-        g_diag.sum_total_ns += g_diag.total_ns;
-
-        if (g_diag.exchange_ns > g_diag.max_exchange_ns)
-            g_diag.max_exchange_ns = g_diag.exchange_ns;
-        if (g_diag.total_ns > g_diag.max_total_ns)
-            g_diag.max_total_ns = g_diag.total_ns;
-
-        /* 6. Periodic slave state check */
-        if ((g_cycle_counter % ECAT_STATE_CHECK_INTERVAL) == 0) {
-            ecat_master_read_states();
-            update_status_snapshot();
+#if ECAT_ENABLE_MONITOR_THREAD
+        /* Trigger recovery (handled by monitor thread) */
+        if (state == ECAT_STATE_OPERATIONAL &&
+            g_consecutive_wkc_errors >= ECAT_WKC_ERROR_THRESHOLD) {
+            plugin_logger_warn(&g_logger,
+                "WKC error threshold (%d) reached, switching to RECOVERING",
+                ECAT_WKC_ERROR_THRESHOLD);
+            atomic_store(&g_plugin_state, ECAT_STATE_RECOVERING);
         }
+#endif
+    } else {
+        g_consecutive_wkc_errors = 0;
+    }
 
-        /* 7. Periodic diagnostic log */
-        if ((g_diag.cycle_count % ECAT_DIAG_REPORT_INTERVAL) == 0 &&
-            g_diag.cycle_count > 0) {
-            uint64_t total_cycles = g_diag.cycle_count + g_diag.wkc_error_count;
-            uint64_t avg_us = (g_diag.sum_total_ns / g_diag.cycle_count) / 1000;
-            plugin_logger_info(&g_logger,
-                "Cycle stats (%llu total): avg=%llu us, max_total=%llu us, "
-                "max_exchange=%llu us",
-                (unsigned long long)total_cycles,
-                (unsigned long long)avg_us,
-                (unsigned long long)(g_diag.max_total_ns / 1000),
-                (unsigned long long)(g_diag.max_exchange_ns / 1000));
-            plugin_logger_info(&g_logger,
-                "WKC errors: %llu total, %llu noframe, rate=%.1f%%",
-                (unsigned long long)g_diag.wkc_error_count,
-                (unsigned long long)g_diag.noframe_count,
-                total_cycles > 0
-                    ? (g_diag.wkc_error_count * 100.0 / total_cycles) : 0.0);
+    /* 5. Update diagnostics (no SOEM calls) */
+    g_diag.total_ns = g_diag.exchange_ns;
+    g_diag.cycle_count++;
+    g_diag.sum_total_ns += g_diag.total_ns;
 
-            /* Reset accumulators to prevent overflow on long runs */
-            g_diag.sum_total_ns = 0;
-            g_diag.cycle_count = 0;
-            g_diag.wkc_error_count = 0;
-            g_diag.noframe_count = 0;
-            g_diag.max_exchange_ns = 0;
-            g_diag.max_total_ns = 0;
-        }
+    if (g_diag.exchange_ns > g_diag.max_exchange_ns)
+        g_diag.max_exchange_ns = g_diag.exchange_ns;
+    if (g_diag.total_ns > g_diag.max_total_ns)
+        g_diag.max_total_ns = g_diag.total_ns;
 
-    } else if (state == ECAT_STATE_RECOVERING) {
-        /* Rate-limited recovery: attempt every ECAT_STATE_CHECK_INTERVAL cycles
-         * to avoid blocking the PLC scan cycle with SOEM state-check timeouts. */
-        if ((g_cycle_counter % ECAT_STATE_CHECK_INTERVAL) == 0) {
-            int result = attempt_recovery();
-            if (result == 1) {
-                /* All slaves back in OP */
-                atomic_store(&g_plugin_state, ECAT_STATE_OPERATIONAL);
-            } else if (result == -1) {
-                /* Max attempts exceeded */
-                atomic_store(&g_plugin_state, ECAT_STATE_ERROR);
-                plugin_logger_error(&g_logger,
-                    "EtherCAT entered ERROR state after max recovery attempts");
-            }
-            update_status_snapshot();
-        }
+    /* 6. Periodic diagnostic log */
+    if ((g_diag.cycle_count % ECAT_DIAG_REPORT_INTERVAL) == 0 &&
+        g_diag.cycle_count > 0) {
+        uint64_t total_cycles = g_diag.cycle_count + g_diag.wkc_error_count;
+        uint64_t avg_us = (g_diag.sum_total_ns / g_diag.cycle_count) / 1000;
+        plugin_logger_info(&g_logger,
+            "Cycle stats (%llu total): avg=%llu us, max_total=%llu us, "
+            "max_exchange=%llu us",
+            (unsigned long long)total_cycles,
+            (unsigned long long)avg_us,
+            (unsigned long long)(g_diag.max_total_ns / 1000),
+            (unsigned long long)(g_diag.max_exchange_ns / 1000));
+        plugin_logger_info(&g_logger,
+            "WKC errors: %llu total, %llu noframe, rate=%.1f%%",
+            (unsigned long long)g_diag.wkc_error_count,
+            (unsigned long long)g_diag.noframe_count,
+            total_cycles > 0
+                ? (g_diag.wkc_error_count * 100.0 / total_cycles) : 0.0);
+
+        /* Reset accumulators to prevent overflow on long runs */
+        g_diag.sum_total_ns = 0;
+        g_diag.cycle_count = 0;
+        g_diag.wkc_error_count = 0;
+        g_diag.noframe_count = 0;
+        g_diag.max_exchange_ns = 0;
+        g_diag.max_total_ns = 0;
     }
 }
 
@@ -775,6 +933,7 @@ static int handle_status_command(char *response, size_t response_size)
     cJSON_AddNumberToObject(metrics, "max_exchange_us", (double)snap.max_exchange_us);
     cJSON_AddNumberToObject(metrics, "consecutive_wkc_errors", snap.consecutive_wkc_errors);
     cJSON_AddNumberToObject(metrics, "recovery_attempts", snap.recovery_attempts);
+    cJSON_AddNumberToObject(metrics, "exchange_skips", (double)snap.exchange_skips);
     cJSON_AddItemToObject(resp, "metrics", metrics);
 
     char *json_str = cJSON_PrintUnformatted(resp);
@@ -841,6 +1000,7 @@ static int handle_diagnostics_command(char *response, size_t response_size)
     cJSON_AddNumberToObject(recovery, "recovery_attempts", snap.recovery_attempts);
     cJSON_AddNumberToObject(recovery, "max_recovery_attempts", ECAT_MAX_RECOVERY_ATTEMPTS);
     cJSON_AddNumberToObject(recovery, "wkc_error_threshold", ECAT_WKC_ERROR_THRESHOLD);
+    cJSON_AddNumberToObject(recovery, "exchange_skips", (double)snap.exchange_skips);
     cJSON_AddItemToObject(resp, "recovery", recovery);
 
     /* Master configuration */
