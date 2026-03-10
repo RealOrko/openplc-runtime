@@ -187,7 +187,8 @@ install_deps_apt() {
         make \
         cmake \
         pkg-config \
-        libffi-dev
+        libffi-dev \
+        ethtool
 }
 
 # For yum-based distros (RHEL 7, CentOS 7, Amazon Linux)
@@ -494,6 +495,80 @@ build_native_plugins() {
     return 0
 }
 
+# Configure Ethernet NIC for low-latency EtherCAT operation
+# Disables IRQ coalescing and receive offloads that add latency/jitter
+# to raw-socket EtherCAT frame exchange (SOEM).
+# Persists via udev rule so settings survive reboot.
+configure_ethercat_nic() {
+    # Skip on non-Linux systems
+    if is_msys2; then
+        return 0
+    fi
+
+    if ! command -v ethtool >/dev/null 2>&1; then
+        log_warning "ethtool not found - skipping NIC optimization for EtherCAT"
+        return 0
+    fi
+
+    log_info "Configuring Ethernet NIC optimizations for EtherCAT..."
+
+    # Apply settings to all active ethernet interfaces now
+    local configured=0
+    for iface_path in /sys/class/net/eth* /sys/class/net/en*; do
+        [ -e "$iface_path" ] || continue
+        local iface=$(basename "$iface_path")
+
+        # Skip virtual/loopback interfaces
+        [ -d "$iface_path/device" ] || continue
+
+        log_info "Optimizing $iface for EtherCAT..."
+
+        # Disable IRQ coalescing (deliver frames immediately)
+        if ethtool -C "$iface" rx-usecs 0 tx-usecs 0 2>/dev/null; then
+            log_success "$iface: IRQ coalescing disabled (rx-usecs=0 tx-usecs=0)"
+        else
+            log_warning "$iface: could not disable IRQ coalescing (driver may not support it)"
+        fi
+
+        # Disable receive offloads that batch/merge packets
+        if ethtool -K "$iface" gro off 2>/dev/null; then
+            log_success "$iface: GRO disabled"
+        else
+            log_warning "$iface: could not disable GRO"
+        fi
+
+        ethtool -K "$iface" gso off 2>/dev/null
+        ethtool -K "$iface" tso off 2>/dev/null
+
+        configured=$((configured + 1))
+    done
+
+    if [ $configured -eq 0 ]; then
+        log_info "No physical ethernet interfaces found to configure"
+        return 0
+    fi
+
+    # Persist settings via udev rule (applied automatically at boot)
+    local udev_rule="/etc/udev/rules.d/90-ethercat-nic.rules"
+    log_info "Installing udev rule for persistent NIC settings: $udev_rule"
+
+    cat > "$udev_rule" <<'UDEV_EOF'
+# EtherCAT NIC optimization for OpenPLC Runtime
+# Disable IRQ coalescing and receive offloads for low-latency frame exchange
+ACTION=="add", SUBSYSTEM=="net", KERNEL=="eth*", RUN+="/sbin/ethtool -C %k rx-usecs 0 tx-usecs 0", RUN+="/sbin/ethtool -K %k gro off gso off tso off"
+ACTION=="add", SUBSYSTEM=="net", KERNEL=="en*", RUN+="/sbin/ethtool -C %k rx-usecs 0 tx-usecs 0", RUN+="/sbin/ethtool -K %k gro off gso off tso off"
+UDEV_EOF
+
+    if [ -f "$udev_rule" ]; then
+        udevadm control --reload-rules 2>/dev/null || true
+        log_success "udev rule installed - NIC settings will persist across reboots"
+    else
+        log_warning "Failed to create udev rule - settings will not persist after reboot"
+    fi
+
+    return 0
+}
+
 # Setup runtime directory (needed for both Linux and Docker)
 # On MSYS2, use /run/runtime which maps to the MSYS2 installation directory
 if is_msys2; then
@@ -529,14 +604,6 @@ echo "Virtual environment created at $VENV_DIR"
 
 setup_plugin_venvs
 
-# Setup discovery service virtual environment (for EtherCAT network scanning)
-log_info "Setting up Discovery Service virtual environment..."
-if bash "$SCRIPTS_DIR/setup_discovery_venv.sh"; then
-    log_success "Discovery Service virtual environment ready"
-else
-    log_warning "Discovery Service setup failed (EtherCAT scanning will not be available)"
-fi
-
 echo "Compiling OpenPLC..."
 if compile_plc; then
     echo "Build process completed successfully!"
@@ -544,6 +611,9 @@ if compile_plc; then
     # Build native plugins after main compilation
     echo "Building native plugins..."
     build_native_plugins
+
+    # Configure NIC for low-latency EtherCAT operation
+    configure_ethercat_nic
 
     # Create installation marker (must be done before starting the service)
     touch "$OPENPLC_DIR/.installed"
