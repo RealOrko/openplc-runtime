@@ -17,10 +17,7 @@
 #include <string.h>
 #include <stdio.h>
 
-/* SO_BUSY_POLL: Linux socket option for low-latency polling.
- * When set, recvfrom() busy-polls the NIC driver for incoming frames
- * instead of sleeping and waiting for an IRQ-triggered wakeup.
- * This eliminates scheduler latency (~5-10us) on the receive path. */
+/* Low-latency NIC tuning and socket options (Linux only) */
 #if !defined(__CYGWIN__) && !defined(_WIN32)
 #include <sys/socket.h>
 #define ECAT_BUSY_POLL_US 50
@@ -116,12 +113,48 @@ int ecat_master_validate_topology(const ecat_config_t *config, plugin_logger_t *
  * =============================================================================
  */
 
+/**
+ * @brief Apply low-latency ethtool settings to the EtherCAT network interface.
+ *
+ * Disables IRQ coalescing and receive offloads (GRO/GSO/TSO) so that
+ * EtherCAT frames are delivered to userspace immediately instead of being
+ * batched by the NIC driver.  Called once during master init, before the
+ * SOEM raw socket is opened.  Requires ethtool on the host; fails silently
+ * if the command is not available or the driver does not support a setting.
+ */
+static void tune_nic(const char *iface, plugin_logger_t *logger)
+{
+#if !defined(__CYGWIN__) && !defined(_WIN32)
+    char cmd[128];
+
+    /* Disable IRQ coalescing - deliver frames immediately */
+    snprintf(cmd, sizeof(cmd), "ethtool -C %s rx-usecs 0 tx-usecs 0 2>/dev/null", iface);
+    if (system(cmd) == 0)
+    {
+        plugin_logger_info(logger, "%s: IRQ coalescing disabled (rx-usecs=0 tx-usecs=0)", iface);
+    }
+
+    /* Disable receive offloads that batch/merge packets */
+    snprintf(cmd, sizeof(cmd), "ethtool -K %s gro off gso off tso off 2>/dev/null", iface);
+    if (system(cmd) == 0)
+    {
+        plugin_logger_info(logger, "%s: GRO/GSO/TSO offloads disabled", iface);
+    }
+#else
+    (void)iface;
+    (void)logger;
+#endif
+}
+
 int ecat_master_open_and_scan(const ecat_config_t *config, plugin_logger_t *logger)
 {
     /* Zero-initialize the SOEM context before use */
     memset(&g_ecx_context, 0, sizeof(g_ecx_context));
     memset(g_iomap, 0, sizeof(g_iomap));
     g_iomap_used_size = 0;
+
+    /* Step 0: Tune NIC for low-latency EtherCAT frame delivery */
+    tune_nic(config->master.interface, logger);
 
     /* Step 1: Initialize SOEM on the configured network interface */
     plugin_logger_info(logger, "Opening network interface: %s", config->master.interface);
