@@ -135,6 +135,7 @@ static plugin_logger_t g_logger;
 static plugin_runtime_args_t g_runtime_args;
 static ecat_config_t g_config;
 static ecat_channel_map_t g_channel_map;
+static ecat_transfer_list_t g_transfer_list;
 static int g_expected_wkc = 0;
 static int g_receive_timeout_us = 0;
 
@@ -528,6 +529,9 @@ int start_loop(void)
     /* Build channel map for process data exchange */
     ecat_io_build_channel_map(&g_config, &g_channel_map, &g_runtime_args, &g_logger);
 
+    /* Build pre-resolved transfer list for fast per-cycle I/O */
+    ecat_io_build_transfer_list(&g_channel_map, &g_transfer_list, &g_runtime_args, &g_logger);
+
     /* Cache expected WKC */
     g_expected_wkc = ecat_master_get_expected_wkc();
     plugin_logger_info(&g_logger, "Expected WKC: %d", g_expected_wkc);
@@ -625,6 +629,7 @@ void stop_loop(void)
     }
 
     memset(&g_channel_map, 0, sizeof(g_channel_map));
+    memset(&g_transfer_list, 0, sizeof(g_transfer_list));
     g_consecutive_wkc_errors = 0;
     g_recovery_attempts = 0;
     g_expected_wkc = 0;
@@ -688,7 +693,7 @@ void cycle_start(void)
 #endif
 
     /* 1. Write PLC outputs to IOmap (from previous cycle's computation) */
-    ecat_io_write_outputs(&g_channel_map, iomap, &g_runtime_args);
+    ecat_io_write_outputs_fast(&g_transfer_list, iomap);
 
     /* 2. Exchange process data with slaves (synchronous) */
     ec_timet t0, t1;
@@ -699,7 +704,7 @@ void cycle_start(void)
     g_diag.exchange_ns = elapsed_ns(&t0, &t1);
 
     /* 3. Read received inputs into PLC buffers */
-    ecat_io_read_inputs(&g_channel_map, iomap, &g_runtime_args);
+    ecat_io_read_inputs_fast(&g_transfer_list, iomap);
 
     g_cycle_counter++;
 

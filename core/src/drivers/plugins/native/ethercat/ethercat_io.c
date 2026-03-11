@@ -513,3 +513,162 @@ void ecat_io_write_outputs(const ecat_channel_map_t *map,
         }
     }
 }
+
+/*
+ * =============================================================================
+ * Transfer List Builder and Fast I/O Functions
+ * =============================================================================
+ */
+
+/**
+ * @brief Resolve one channel map entry into a PLC variable pointer
+ *
+ * Returns the direct pointer to the PLC variable (e.g. &__IW3) for the
+ * given channel direction and IEC size, or NULL if the slot is unmapped.
+ */
+static void *resolve_plc_ptr(const ecat_channel_map_entry_t *e,
+                              iec_dir_t direction,
+                              plugin_runtime_args_t *args)
+{
+    if (direction == IEC_DIR_INPUT) {
+        switch (e->size) {
+        case IEC_SIZE_BIT:
+            if (args->bool_input &&
+                args->bool_input[e->byte_index] &&
+                args->bool_input[e->byte_index][e->bit_index])
+                return args->bool_input[e->byte_index][e->bit_index];
+            break;
+        case IEC_SIZE_BYTE:
+            if (args->byte_input && args->byte_input[e->byte_index])
+                return args->byte_input[e->byte_index];
+            break;
+        case IEC_SIZE_WORD:
+            if (args->int_input && args->int_input[e->byte_index])
+                return args->int_input[e->byte_index];
+            break;
+        case IEC_SIZE_DWORD:
+            if (args->dint_input && args->dint_input[e->byte_index])
+                return args->dint_input[e->byte_index];
+            break;
+        case IEC_SIZE_LWORD:
+            if (args->lint_input && args->lint_input[e->byte_index])
+                return args->lint_input[e->byte_index];
+            break;
+        }
+    } else {
+        switch (e->size) {
+        case IEC_SIZE_BIT:
+            if (args->bool_output &&
+                args->bool_output[e->byte_index] &&
+                args->bool_output[e->byte_index][e->bit_index])
+                return args->bool_output[e->byte_index][e->bit_index];
+            break;
+        case IEC_SIZE_BYTE:
+            if (args->byte_output && args->byte_output[e->byte_index])
+                return args->byte_output[e->byte_index];
+            break;
+        case IEC_SIZE_WORD:
+            if (args->int_output && args->int_output[e->byte_index])
+                return args->int_output[e->byte_index];
+            break;
+        case IEC_SIZE_DWORD:
+            if (args->dint_output && args->dint_output[e->byte_index])
+                return args->dint_output[e->byte_index];
+            break;
+        case IEC_SIZE_LWORD:
+            if (args->lint_output && args->lint_output[e->byte_index])
+                return args->lint_output[e->byte_index];
+            break;
+        }
+    }
+    return NULL;
+}
+
+/** Map IEC size qualifier to byte count */
+static uint8_t iec_size_to_bytes(iec_size_t sz)
+{
+    switch (sz) {
+    case IEC_SIZE_BIT:   return 1;
+    case IEC_SIZE_BYTE:  return 1;
+    case IEC_SIZE_WORD:  return 2;
+    case IEC_SIZE_DWORD: return 4;
+    case IEC_SIZE_LWORD: return 8;
+    }
+    return 0;
+}
+
+int ecat_io_build_transfer_list(const ecat_channel_map_t *map,
+                                ecat_transfer_list_t *xfer,
+                                plugin_runtime_args_t *args,
+                                plugin_logger_t *logger)
+{
+    memset(xfer, 0, sizeof(*xfer));
+
+    int resolved = 0;
+
+    /* Resolve input channels */
+    for (int i = 0; i < map->input_count; i++) {
+        const ecat_channel_map_entry_t *e = &map->inputs[i];
+        void *plc_ptr = resolve_plc_ptr(e, IEC_DIR_INPUT, args);
+        if (!plc_ptr)
+            continue;
+
+        ecat_transfer_entry_t *t = &xfer->inputs[xfer->input_count++];
+        t->plc_ptr         = plc_ptr;
+        t->iomap_offset    = e->iomap_offset;
+        t->iomap_bit_offset = e->iomap_bit_offset;
+        t->byte_count      = iec_size_to_bytes(e->size);
+        t->is_bit          = (e->size == IEC_SIZE_BIT);
+        resolved++;
+    }
+
+    /* Resolve output channels */
+    for (int i = 0; i < map->output_count; i++) {
+        const ecat_channel_map_entry_t *e = &map->outputs[i];
+        void *plc_ptr = resolve_plc_ptr(e, IEC_DIR_OUTPUT, args);
+        if (!plc_ptr)
+            continue;
+
+        ecat_transfer_entry_t *t = &xfer->outputs[xfer->output_count++];
+        t->plc_ptr         = plc_ptr;
+        t->iomap_offset    = e->iomap_offset;
+        t->iomap_bit_offset = e->iomap_bit_offset;
+        t->byte_count      = iec_size_to_bytes(e->size);
+        t->is_bit          = (e->size == IEC_SIZE_BIT);
+        resolved++;
+    }
+
+    plugin_logger_info(logger,
+        "Transfer list built: %d inputs, %d outputs (%d resolved)",
+        xfer->input_count, xfer->output_count, resolved);
+
+    return resolved > 0 ? resolved : -1;
+}
+
+void ecat_io_read_inputs_fast(const ecat_transfer_list_t *xfer,
+                              const uint8_t *iomap_base)
+{
+    for (int i = 0; i < xfer->input_count; i++) {
+        const ecat_transfer_entry_t *e = &xfer->inputs[i];
+        if (e->is_bit) {
+            *(uint8_t *)e->plc_ptr =
+                iomap_read_bit(iomap_base + e->iomap_offset, e->iomap_bit_offset);
+        } else {
+            memcpy(e->plc_ptr, iomap_base + e->iomap_offset, e->byte_count);
+        }
+    }
+}
+
+void ecat_io_write_outputs_fast(const ecat_transfer_list_t *xfer,
+                                uint8_t *iomap_base)
+{
+    for (int i = 0; i < xfer->output_count; i++) {
+        const ecat_transfer_entry_t *e = &xfer->outputs[i];
+        if (e->is_bit) {
+            iomap_write_bit(iomap_base + e->iomap_offset, e->iomap_bit_offset,
+                            *(const uint8_t *)e->plc_ptr);
+        } else {
+            memcpy(iomap_base + e->iomap_offset, e->plc_ptr, e->byte_count);
+        }
+    }
+}

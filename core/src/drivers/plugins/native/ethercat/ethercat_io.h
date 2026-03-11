@@ -144,4 +144,79 @@ void ecat_io_write_outputs(const ecat_channel_map_t *map,
                            uint8_t *iomap_base,
                            plugin_runtime_args_t *args);
 
+/*
+ * =============================================================================
+ * Transfer List — Pre-resolved I/O for fast per-cycle exchange
+ * =============================================================================
+ *
+ * The transfer list resolves all pointer dereferences, NULL checks, and type
+ * dispatches once at startup, producing a flat array of {plc_ptr, iomap_offset,
+ * byte_count} entries.  The per-cycle functions then iterate this array with a
+ * single branch (bit vs. non-bit) and a direct memcpy per entry.
+ */
+
+/**
+ * @brief Single pre-resolved transfer entry
+ *
+ * All fields are resolved once by ecat_io_build_transfer_list() so that
+ * the per-cycle functions need no switch, no NULL check, and no double
+ * pointer dereference.
+ */
+typedef struct {
+    void    *plc_ptr;           /* direct pointer to the PLC variable        */
+    size_t   iomap_offset;      /* byte offset from IOmap base               */
+    int      iomap_bit_offset;  /* bit offset within the byte (0-7)          */
+    uint8_t  byte_count;        /* bytes to copy (1, 2, 4, or 8)            */
+    bool     is_bit;            /* true for IEC_SIZE_BIT channels            */
+} ecat_transfer_entry_t;
+
+/**
+ * @brief Complete transfer list — separate arrays for inputs and outputs
+ */
+typedef struct {
+    ecat_transfer_entry_t inputs[ECAT_MAX_MAP_ENTRIES];
+    int                   input_count;
+    ecat_transfer_entry_t outputs[ECAT_MAX_MAP_ENTRIES];
+    int                   output_count;
+} ecat_transfer_list_t;
+
+/**
+ * @brief Build a transfer list from a channel map and runtime args
+ *
+ * Resolves each channel map entry into a direct {plc_ptr, iomap_offset,
+ * byte_count} triple.  Entries whose PLC pointer is NULL (unmapped IEC
+ * address) are silently skipped.
+ *
+ * Must be called after ecat_io_build_channel_map() and after glueVars()
+ * has populated the image table pointers.
+ *
+ * @param map    Channel map built by ecat_io_build_channel_map()
+ * @param xfer   Output transfer list (zeroed before population)
+ * @param args   Runtime args with PLC buffer pointers
+ * @param logger Logger instance
+ * @return Number of entries resolved, or -1 on error
+ */
+int ecat_io_build_transfer_list(const ecat_channel_map_t *map,
+                                ecat_transfer_list_t *xfer,
+                                plugin_runtime_args_t *args,
+                                plugin_logger_t *logger);
+
+/**
+ * @brief Fast per-cycle: copy IOmap inputs into PLC variables
+ *
+ * @param xfer       Transfer list built by ecat_io_build_transfer_list()
+ * @param iomap_base Base pointer of the IOmap buffer
+ */
+void ecat_io_read_inputs_fast(const ecat_transfer_list_t *xfer,
+                              const uint8_t *iomap_base);
+
+/**
+ * @brief Fast per-cycle: copy PLC variables into IOmap outputs
+ *
+ * @param xfer       Transfer list built by ecat_io_build_transfer_list()
+ * @param iomap_base Base pointer of the IOmap buffer
+ */
+void ecat_io_write_outputs_fast(const ecat_transfer_list_t *xfer,
+                                uint8_t *iomap_base);
+
 #endif /* ETHERCAT_IO_H */
