@@ -13,6 +13,7 @@
 #include "ethercat_master.h"
 #include "soem/soem.h"
 
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -21,7 +22,418 @@
 #if !defined(__CYGWIN__) && !defined(_WIN32)
 #include <sys/socket.h>
 #define ECAT_BUSY_POLL_US 50
-#endif
+
+/*
+ * =============================================================================
+ * NIC Settings Save / Restore (with crash-recovery persistence)
+ * =============================================================================
+ *
+ * Before applying low-latency ethtool tuning we capture the original NIC
+ * settings and persist them to a file on disk.  On a normal shutdown the
+ * settings are restored and the file is removed.  If the process is killed
+ * (SIGKILL, OOM, crash), the file survives and the next startup detects it,
+ * restoring the NIC before applying fresh tuning.
+ *
+ * Persistence file: /run/runtime/ecat_nic_saved.conf  (inside tmpfs, so
+ * a full system reboot clears it -- at which point the kernel already
+ * reloads driver defaults).
+ *
+ * File format (simple key=value, one per line):
+ *   iface=eth0
+ *   rx_usecs=100
+ *   tx_usecs=50
+ *   gro=on
+ *   gso=on
+ *   tso=on
+ */
+
+#include <sys/stat.h>
+#include <unistd.h>
+#include <errno.h>
+
+/** Maximum interface name length (IFNAMSIZ) */
+#define NIC_IFNAME_MAX 16
+
+/** Directory and file used to persist original NIC settings across crashes */
+#define NIC_SAVE_DIR  "/run/runtime"
+#define NIC_SAVE_FILE NIC_SAVE_DIR "/ecat_nic_saved.conf"
+
+typedef struct {
+    char iface[NIC_IFNAME_MAX];  /* interface these settings belong to     */
+    int  saved;                  /* non-zero if values were captured       */
+
+    /* ethtool -C (coalescing) */
+    int  rx_usecs;
+    int  tx_usecs;
+    int  coalescing_saved;       /* non-zero if coalescing values valid    */
+
+    /* ethtool -K (offloads) */
+    int  gro;                    /* 1 = on, 0 = off */
+    int  gso;
+    int  tso;
+    int  offloads_saved;         /* non-zero if offload values valid       */
+} nic_saved_settings_t;
+
+static nic_saved_settings_t g_nic_saved = { .saved = 0 };
+
+/* ------------------------------------------------------------------ */
+/*  Helpers: ethtool output parsing                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Parse a single integer value from an ethtool output line.
+ *
+ * Looks for a line containing exactly "<key>:" (not "<key>-something:")
+ * and reads the integer that follows the colon.  This avoids matching
+ * "rx-usecs-irq" when searching for "rx-usecs".
+ *
+ * @return 0 on success, -1 if not found
+ */
+static int parse_ethtool_int(const char *output, const char *key, int *value)
+{
+    size_t key_len = strlen(key);
+    const char *p = output;
+    while ((p = strstr(p, key)) != NULL) {
+        char next = p[key_len];
+        /* Accept only if the key is followed by ':' or whitespace,
+         * not by '-' or another alnum (e.g. "rx-usecs-irq") */
+        if (next == ':' || next == ' ' || next == '\t')
+            break;
+        p += key_len;
+    }
+    if (!p)
+        return -1;
+    p += key_len;
+    while (*p == ':' || *p == ' ' || *p == '\t')
+        p++;
+    if (*p == '\0' || (*p != '-' && !isdigit((unsigned char)*p)))
+        return -1;
+    *value = atoi(p);
+    return 0;
+}
+
+/**
+ * @brief Parse an on/off boolean from an ethtool -k output line.
+ *
+ * Lines look like: "generic-receive-offload: on"
+ *
+ * @return 0 on success, -1 if not found
+ */
+static int parse_ethtool_bool(const char *output, const char *key, int *value)
+{
+    const char *p = strstr(output, key);
+    if (!p)
+        return -1;
+    p += strlen(key);
+    while (*p == ':' || *p == ' ' || *p == '\t')
+        p++;
+    if (strncmp(p, "on", 2) == 0)
+        *value = 1;
+    else
+        *value = 0;
+    return 0;
+}
+
+/**
+ * @brief Run a command and capture its stdout into a buffer.
+ *
+ * @return 0 on success, -1 on failure
+ */
+static int run_capture(const char *cmd, char *buf, size_t buf_size)
+{
+    FILE *fp = popen(cmd, "r");
+    if (!fp)
+        return -1;
+    size_t total = 0;
+    while (total < buf_size - 1) {
+        size_t n = fread(buf + total, 1, buf_size - 1 - total, fp);
+        if (n == 0)
+            break;
+        total += n;
+    }
+    buf[total] = '\0';
+    int status = pclose(fp);
+    return (status == 0) ? 0 : -1;
+}
+
+/**
+ * @brief Validate interface name contains only safe characters (alnum, _ , -).
+ *
+ * Prevents command injection when the name is interpolated into shell commands.
+ *
+ * @return 1 if safe, 0 if invalid
+ */
+static int validate_iface_name(const char *iface)
+{
+    size_t len = strlen(iface);
+    if (len == 0 || len >= NIC_IFNAME_MAX)
+        return 0;
+    if (!isalpha((unsigned char)iface[0]))
+        return 0;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)iface[i];
+        if (!isalnum(c) && c != '_' && c != '-')
+            return 0;
+    }
+    return 1;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Persistence: write / read / remove the save file                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Write the in-memory saved settings to the persistence file.
+ *
+ * Creates NIC_SAVE_DIR if it does not exist.  The file is written
+ * atomically: we write to a temporary path and rename, so a crash
+ * mid-write never leaves a half-written file.
+ */
+static void persist_nic_settings(plugin_logger_t *logger)
+{
+    /* Ensure the directory exists (may already exist for the log socket) */
+    if (mkdir(NIC_SAVE_DIR, 0755) != 0 && errno != EEXIST) {
+        plugin_logger_warn(logger,
+            "Cannot create %s: %s - NIC settings will not survive a crash",
+            NIC_SAVE_DIR, strerror(errno));
+        return;
+    }
+
+    char tmp_path[128];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", NIC_SAVE_FILE);
+
+    FILE *fp = fopen(tmp_path, "w");
+    if (!fp) {
+        plugin_logger_warn(logger,
+            "Cannot write %s: %s - NIC settings will not survive a crash",
+            tmp_path, strerror(errno));
+        return;
+    }
+
+    fprintf(fp, "iface=%s\n", g_nic_saved.iface);
+
+    if (g_nic_saved.coalescing_saved) {
+        fprintf(fp, "rx_usecs=%d\n", g_nic_saved.rx_usecs);
+        fprintf(fp, "tx_usecs=%d\n", g_nic_saved.tx_usecs);
+    }
+
+    if (g_nic_saved.offloads_saved) {
+        fprintf(fp, "gro=%s\n", g_nic_saved.gro ? "on" : "off");
+        fprintf(fp, "gso=%s\n", g_nic_saved.gso ? "on" : "off");
+        fprintf(fp, "tso=%s\n", g_nic_saved.tso ? "on" : "off");
+    }
+
+    fflush(fp);
+    fclose(fp);
+
+    /* Atomic rename so we never have a half-written file */
+    if (rename(tmp_path, NIC_SAVE_FILE) != 0) {
+        plugin_logger_warn(logger, "Cannot rename %s -> %s: %s",
+                           tmp_path, NIC_SAVE_FILE, strerror(errno));
+        unlink(tmp_path);
+        return;
+    }
+
+    plugin_logger_info(logger, "NIC settings persisted to %s", NIC_SAVE_FILE);
+}
+
+/**
+ * @brief Remove the persistence file (called after a successful restore).
+ */
+static void remove_nic_save_file(plugin_logger_t *logger)
+{
+    if (unlink(NIC_SAVE_FILE) == 0) {
+        plugin_logger_debug(logger, "Removed %s", NIC_SAVE_FILE);
+    }
+    /* ENOENT is fine - file already gone */
+}
+
+/**
+ * @brief Load saved NIC settings from the persistence file.
+ *
+ * Populates g_nic_saved from the file contents.
+ *
+ * @return 1 if a valid save file was found and loaded, 0 otherwise
+ */
+static int load_nic_settings_from_file(plugin_logger_t *logger)
+{
+    FILE *fp = fopen(NIC_SAVE_FILE, "r");
+    if (!fp)
+        return 0;
+
+    memset(&g_nic_saved, 0, sizeof(g_nic_saved));
+
+    char line[128];
+    while (fgets(line, sizeof(line), fp)) {
+        /* Strip trailing newline */
+        size_t len = strlen(line);
+        if (len > 0 && line[len - 1] == '\n')
+            line[len - 1] = '\0';
+
+        char *eq = strchr(line, '=');
+        if (!eq)
+            continue;
+        *eq = '\0';
+        const char *key = line;
+        const char *val = eq + 1;
+
+        if (strcmp(key, "iface") == 0) {
+            strncpy(g_nic_saved.iface, val, NIC_IFNAME_MAX - 1);
+            g_nic_saved.iface[NIC_IFNAME_MAX - 1] = '\0';
+        } else if (strcmp(key, "rx_usecs") == 0) {
+            g_nic_saved.rx_usecs = atoi(val);
+            g_nic_saved.coalescing_saved = 1;
+        } else if (strcmp(key, "tx_usecs") == 0) {
+            g_nic_saved.tx_usecs = atoi(val);
+            g_nic_saved.coalescing_saved = 1;
+        } else if (strcmp(key, "gro") == 0) {
+            g_nic_saved.gro = (strcmp(val, "on") == 0) ? 1 : 0;
+            g_nic_saved.offloads_saved = 1;
+        } else if (strcmp(key, "gso") == 0) {
+            g_nic_saved.gso = (strcmp(val, "on") == 0) ? 1 : 0;
+            g_nic_saved.offloads_saved = 1;
+        } else if (strcmp(key, "tso") == 0) {
+            g_nic_saved.tso = (strcmp(val, "on") == 0) ? 1 : 0;
+            g_nic_saved.offloads_saved = 1;
+        }
+    }
+
+    fclose(fp);
+
+    if (g_nic_saved.iface[0] == '\0' || !validate_iface_name(g_nic_saved.iface)) {
+        plugin_logger_warn(logger,
+            "Invalid or empty interface in %s - discarding", NIC_SAVE_FILE);
+        remove_nic_save_file(logger);
+        memset(&g_nic_saved, 0, sizeof(g_nic_saved));
+        return 0;
+    }
+
+    g_nic_saved.saved = 1;
+    return 1;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Core: save, restore, recover from crash                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Capture current NIC settings and persist to disk.
+ */
+static void save_nic_settings(const char *iface, plugin_logger_t *logger)
+{
+    memset(&g_nic_saved, 0, sizeof(g_nic_saved));
+    strncpy(g_nic_saved.iface, iface, NIC_IFNAME_MAX - 1);
+    g_nic_saved.iface[NIC_IFNAME_MAX - 1] = '\0';
+
+    char cmd[128];
+    char output[2048];
+
+    /* Capture coalescing settings */
+    snprintf(cmd, sizeof(cmd), "ethtool -c %s 2>/dev/null", iface);
+    if (run_capture(cmd, output, sizeof(output)) == 0) {
+        int ok = 0;
+        ok += (parse_ethtool_int(output, "rx-usecs", &g_nic_saved.rx_usecs) == 0);
+        ok += (parse_ethtool_int(output, "tx-usecs", &g_nic_saved.tx_usecs) == 0);
+        if (ok > 0) {
+            g_nic_saved.coalescing_saved = 1;
+            plugin_logger_info(logger,
+                "%s: saved coalescing (rx-usecs=%d, tx-usecs=%d)",
+                iface, g_nic_saved.rx_usecs, g_nic_saved.tx_usecs);
+        }
+    }
+
+    /* Capture offload settings */
+    snprintf(cmd, sizeof(cmd), "ethtool -k %s 2>/dev/null", iface);
+    if (run_capture(cmd, output, sizeof(output)) == 0) {
+        int ok = 0;
+        ok += (parse_ethtool_bool(output, "generic-receive-offload", &g_nic_saved.gro) == 0);
+        ok += (parse_ethtool_bool(output, "generic-segmentation-offload", &g_nic_saved.gso) == 0);
+        ok += (parse_ethtool_bool(output, "tcp-segmentation-offload", &g_nic_saved.tso) == 0);
+        if (ok > 0) {
+            g_nic_saved.offloads_saved = 1;
+            plugin_logger_info(logger,
+                "%s: saved offloads (gro=%s, gso=%s, tso=%s)",
+                iface,
+                g_nic_saved.gro ? "on" : "off",
+                g_nic_saved.gso ? "on" : "off",
+                g_nic_saved.tso ? "on" : "off");
+        }
+    }
+
+    g_nic_saved.saved = 1;
+
+    /* Persist to disk so a crash does not lose the original values */
+    persist_nic_settings(logger);
+}
+
+/**
+ * @brief Apply saved settings back to the NIC and clean up.
+ *
+ * Works both for the in-memory path (normal shutdown) and for settings
+ * loaded from the persistence file (crash recovery).
+ */
+static void restore_nic_settings(plugin_logger_t *logger)
+{
+    if (!g_nic_saved.saved)
+        return;
+
+    const char *iface = g_nic_saved.iface;
+    char cmd[128];
+
+    if (g_nic_saved.coalescing_saved) {
+        snprintf(cmd, sizeof(cmd),
+            "ethtool -C %s rx-usecs %d tx-usecs %d 2>/dev/null",
+            iface, g_nic_saved.rx_usecs, g_nic_saved.tx_usecs);
+        if (system(cmd) == 0) {
+            plugin_logger_info(logger,
+                "%s: restored coalescing (rx-usecs=%d, tx-usecs=%d)",
+                iface, g_nic_saved.rx_usecs, g_nic_saved.tx_usecs);
+        }
+    }
+
+    if (g_nic_saved.offloads_saved) {
+        snprintf(cmd, sizeof(cmd),
+            "ethtool -K %s gro %s gso %s tso %s 2>/dev/null",
+            iface,
+            g_nic_saved.gro ? "on" : "off",
+            g_nic_saved.gso ? "on" : "off",
+            g_nic_saved.tso ? "on" : "off");
+        if (system(cmd) == 0) {
+            plugin_logger_info(logger,
+                "%s: restored offloads (gro=%s, gso=%s, tso=%s)",
+                iface,
+                g_nic_saved.gro ? "on" : "off",
+                g_nic_saved.gso ? "on" : "off",
+                g_nic_saved.tso ? "on" : "off");
+        }
+    }
+
+    g_nic_saved.saved = 0;
+    remove_nic_save_file(logger);
+    plugin_logger_info(logger, "%s: NIC settings restored to original values", iface);
+}
+
+/**
+ * @brief Recover NIC settings left over from a previous crash.
+ *
+ * If the persistence file exists it means the previous process died
+ * before it could restore the NIC.  Load the file and apply the
+ * saved settings now, before we capture fresh ones and re-tune.
+ */
+static void recover_nic_settings(plugin_logger_t *logger)
+{
+    if (!load_nic_settings_from_file(logger))
+        return;
+
+    plugin_logger_warn(logger,
+        "Found stale NIC settings file (%s) - previous process likely crashed. "
+        "Restoring %s to original settings before re-tuning.",
+        NIC_SAVE_FILE, g_nic_saved.iface);
+
+    restore_nic_settings(logger);
+}
+
+#endif /* !__CYGWIN__ && !_WIN32 */
 
 /*
  * =============================================================================
@@ -126,6 +538,17 @@ static void tune_nic(const char *iface, plugin_logger_t *logger)
 {
 #if !defined(__CYGWIN__) && !defined(_WIN32)
     char cmd[128];
+
+    if (!validate_iface_name(iface)) {
+        plugin_logger_warn(logger, "Skipping NIC tuning: invalid interface name '%s'", iface);
+        return;
+    }
+
+    /* If a previous process crashed, restore the NIC first */
+    recover_nic_settings(logger);
+
+    /* Save current settings so they can be restored on close */
+    save_nic_settings(iface, logger);
 
     /* Disable IRQ coalescing - deliver frames immediately */
     snprintf(cmd, sizeof(cmd), "ethtool -C %s rx-usecs 0 tx-usecs 0 2>/dev/null", iface);
@@ -494,19 +917,24 @@ int ecat_master_transition_to_op(plugin_logger_t *logger)
 
 void ecat_master_close(plugin_logger_t *logger)
 {
-    if (!g_soem_initialized) {
-        plugin_logger_debug(logger, "SOEM not initialized, nothing to close");
-        return;
+    if (g_soem_initialized) {
+        /* Transition all slaves to INIT state */
+        plugin_logger_info(logger, "Transitioning slaves to INIT state...");
+        g_ecx_context.slavelist[0].state = EC_STATE_INIT;
+        ecx_writestate(&g_ecx_context, 0);
+
+        /* Close the network interface */
+        ecx_close(&g_ecx_context);
+        g_soem_initialized = 0;
     }
 
-    /* Transition all slaves to INIT state */
-    plugin_logger_info(logger, "Transitioning slaves to INIT state...");
-    g_ecx_context.slavelist[0].state = EC_STATE_INIT;
-    ecx_writestate(&g_ecx_context, 0);
-
-    /* Close the network interface */
-    ecx_close(&g_ecx_context);
-    g_soem_initialized = 0;
+    /* Always attempt to restore NIC settings, even if SOEM init had failed
+     * after tune_nic() already modified the interface. The restore function
+     * checks g_nic_saved.saved internally and is a no-op when there is
+     * nothing to undo. */
+#if !defined(__CYGWIN__) && !defined(_WIN32)
+    restore_nic_settings(logger);
+#endif
 
     /* Clear IO map */
     memset(g_iomap, 0, sizeof(g_iomap));
