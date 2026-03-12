@@ -796,23 +796,15 @@ void cycle_end(void)
  */
 
 /**
- * @brief Handle the "scan" command using a temporary SOEM context
+ * @brief Validate a network interface name for safe use in SOEM calls.
  *
- * Creates a separate ecx_contextt (not the master's g_ecx_context) to scan
- * the bus for slaves. This allows scanning even when the master is not running.
+ * Rejects names that are empty, too long, or contain characters outside
+ * [a-zA-Z0-9_-].  Writes a JSON error to @p response on failure.
+ *
+ * @return 0 if valid, -1 if invalid (response already filled)
  */
-static int handle_scan_command(cJSON *root, char *response, size_t response_size)
+static int validate_interface_name(const char *ifname, char *response, size_t response_size)
 {
-    cJSON *params = cJSON_GetObjectItemCaseSensitive(root, "params");
-    cJSON *iface = params ? cJSON_GetObjectItemCaseSensitive(params, "interface") : NULL;
-
-    if (!iface || !cJSON_IsString(iface)) {
-        snprintf(response, response_size, "{\"error\":\"missing 'interface' param\"}");
-        return -1;
-    }
-
-    /* Validate interface name (mirrors _validate_interface_name in Python) */
-    const char *ifname = iface->valuestring;
     size_t ifname_len = strlen(ifname);
     if (ifname_len == 0 || ifname_len > 15) { /* IFNAMSIZ - 1 */
         snprintf(response, response_size, "{\"error\":\"invalid interface name length\"}");
@@ -829,6 +821,27 @@ static int handle_scan_command(cJSON *root, char *response, size_t response_size
             return -1;
         }
     }
+    return 0;
+}
+
+/**
+ * @brief Handle the "scan" command using a temporary SOEM context
+ *
+ * Creates a separate ecx_contextt (not the master's g_ecx_context) to scan
+ * the bus for slaves. This allows scanning even when the master is not running.
+ */
+static int handle_scan_command(cJSON *root, char *response, size_t response_size)
+{
+    cJSON *params = cJSON_GetObjectItemCaseSensitive(root, "params");
+    cJSON *iface = params ? cJSON_GetObjectItemCaseSensitive(params, "interface") : NULL;
+
+    if (!iface || !cJSON_IsString(iface)) {
+        snprintf(response, response_size, "{\"error\":\"missing 'interface' param\"}");
+        return -1;
+    }
+
+    if (validate_interface_name(iface->valuestring, response, response_size) != 0)
+        return -1;
 
     /* Refuse scan while master is actively running on the bus */
     int state = atomic_load(&g_plugin_state);
@@ -892,6 +905,150 @@ static int handle_scan_command(cJSON *root, char *response, size_t response_size
     cJSON_Delete(resp);
 
     ecx_close(&scan_ctx);
+    return 0;
+}
+
+/**
+ * @brief Handle the "list-interfaces" command
+ *
+ * Uses ec_find_adapters() from SOEM to enumerate network adapters.
+ * Does not require a SOEM context or bus access.
+ */
+static int handle_list_interfaces_command(char *response, size_t response_size)
+{
+    ec_adaptert *adapters = ec_find_adapters();
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddStringToObject(resp, "status", "success");
+    cJSON *ifaces = cJSON_AddArrayToObject(resp, "interfaces");
+
+    int count = 0;
+    for (ec_adaptert *a = adapters; a != NULL; a = a->next) {
+        cJSON *entry = cJSON_CreateObject();
+        cJSON_AddStringToObject(entry, "name", a->name);
+        cJSON_AddStringToObject(entry, "description", a->desc);
+        cJSON_AddItemToArray(ifaces, entry);
+        count++;
+    }
+
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Found %d network interface(s)", count);
+    cJSON_AddStringToObject(resp, "message", msg);
+
+    char *json_str = cJSON_PrintUnformatted(resp);
+    if (json_str) {
+        snprintf(response, response_size, "%s", json_str);
+        free(json_str);
+    }
+    cJSON_Delete(resp);
+    ec_free_adapters(adapters);
+
+    return 0;
+}
+
+/**
+ * @brief Handle the "test" command using a temporary SOEM context
+ *
+ * Creates a separate ecx_contextt to scan the bus and return info about
+ * the slave at the requested position. Used by the Editor to test
+ * connectivity to a specific device.
+ */
+static int handle_test_command(cJSON *root, char *response, size_t response_size)
+{
+    cJSON *params = cJSON_GetObjectItemCaseSensitive(root, "params");
+    cJSON *iface = params ? cJSON_GetObjectItemCaseSensitive(params, "interface") : NULL;
+    cJSON *pos = params ? cJSON_GetObjectItemCaseSensitive(params, "position") : NULL;
+
+    if (!iface || !cJSON_IsString(iface)) {
+        snprintf(response, response_size, "{\"error\":\"missing 'interface' param\"}");
+        return -1;
+    }
+    if (!pos || !cJSON_IsNumber(pos)) {
+        snprintf(response, response_size, "{\"error\":\"missing 'position' param\"}");
+        return -1;
+    }
+
+    int position = pos->valueint;
+    if (position < 1) {
+        snprintf(response, response_size, "{\"error\":\"'position' must be a positive integer\"}");
+        return -1;
+    }
+
+    if (validate_interface_name(iface->valuestring, response, response_size) != 0)
+        return -1;
+
+    /* Refuse test while master is actively running on the bus */
+    int state = atomic_load(&g_plugin_state);
+    if (state == ECAT_STATE_OPERATIONAL || state == ECAT_STATE_RECOVERING ||
+        state == ECAT_STATE_TRANSITIONING) {
+        snprintf(response, response_size,
+            "{\"error\":\"EtherCAT master is running. Stop the PLC before testing.\"}");
+        return -1;
+    }
+
+    ecx_contextt test_ctx;
+    memset(&test_ctx, 0, sizeof(test_ctx));
+
+    if (!ecx_init(&test_ctx, iface->valuestring)) {
+        snprintf(response, response_size,
+            "{\"error\":\"Failed to open interface '%s'\"}", iface->valuestring);
+        return -1;
+    }
+
+    int slave_count = ecx_config_init(&test_ctx);
+    if (slave_count <= 0) {
+        ecx_close(&test_ctx);
+        snprintf(response, response_size,
+            "{\"status\":\"success\",\"connected\":false,\"device\":null,"
+            "\"message\":\"No EtherCAT slaves found on the network\"}");
+        return 0;
+    }
+
+    if (position > test_ctx.slavecount) {
+        char msg[128];
+        snprintf(msg, sizeof(msg),
+            "No device at position %d. Found %d slave(s).",
+            position, test_ctx.slavecount);
+        ecx_close(&test_ctx);
+        snprintf(response, response_size,
+            "{\"status\":\"error\",\"connected\":false,\"device\":null,"
+            "\"message\":\"%s\"}", msg);
+        return -1;
+    }
+
+    ec_slavet *s = &test_ctx.slavelist[position];
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddStringToObject(resp, "status", "success");
+    cJSON_AddBoolToObject(resp, "connected", 1);
+
+    cJSON *dev = cJSON_CreateObject();
+    cJSON_AddNumberToObject(dev, "position", position);
+    cJSON_AddStringToObject(dev, "name", s->name);
+    cJSON_AddNumberToObject(dev, "vendor_id", s->eep_man);
+    cJSON_AddNumberToObject(dev, "product_code", s->eep_id);
+    cJSON_AddNumberToObject(dev, "revision", s->eep_rev);
+    cJSON_AddNumberToObject(dev, "serial_number", s->eep_ser);
+    cJSON_AddStringToObject(dev, "state", "UNKNOWN");
+    cJSON_AddNumberToObject(dev, "al_status_code", 0);
+    cJSON_AddBoolToObject(dev, "has_coe", (s->mbx_proto & 0x04) != 0);
+    cJSON_AddNumberToObject(dev, "input_bytes", 0);
+    cJSON_AddNumberToObject(dev, "output_bytes", 0);
+    cJSON_AddItemToObject(resp, "device", dev);
+
+    char msg[128];
+    snprintf(msg, sizeof(msg),
+        "Successfully connected to %s at position %d", s->name, position);
+    cJSON_AddStringToObject(resp, "message", msg);
+
+    char *json_str = cJSON_PrintUnformatted(resp);
+    if (json_str) {
+        snprintf(response, response_size, "%s", json_str);
+        free(json_str);
+    }
+    cJSON_Delete(resp);
+
+    ecx_close(&test_ctx);
     return 0;
 }
 
@@ -1049,6 +1206,10 @@ int execute_command(const char *command_json, char *response, size_t response_si
     int result = -1;
     if (strcmp(cmd->valuestring, "scan") == 0) {
         result = handle_scan_command(root, response, response_size);
+    } else if (strcmp(cmd->valuestring, "list-interfaces") == 0) {
+        result = handle_list_interfaces_command(response, response_size);
+    } else if (strcmp(cmd->valuestring, "test") == 0) {
+        result = handle_test_command(root, response, response_size);
     } else if (strcmp(cmd->valuestring, "status") == 0) {
         result = handle_status_command(response, response_size);
     } else if (strcmp(cmd->valuestring, "diagnostics") == 0) {
