@@ -253,7 +253,7 @@ int plugin_driver_init(plugin_driver_t *driver)
     // Only acquire Python GIL if we have Python plugins and Python is initialized
     // Initialize to PyGILState_LOCKED (0) to satisfy compiler warning
     PyGILState_STATE local_gstate = PyGILState_LOCKED;
-    int have_gil = has_python_plugin && Py_IsInitialized();
+    int have_gil                  = has_python_plugin && Py_IsInitialized();
     if (have_gil)
     {
         local_gstate = PyGILState_Ensure();
@@ -426,8 +426,8 @@ int plugin_driver_start(plugin_driver_t *driver)
                 }
                 else
                 {
-                    log_error("Native plugin %s failed to start (returned %d)",
-                              plugin->config.name, result);
+                    log_error("Native plugin %s failed to start (returned %d)", plugin->config.name,
+                              result);
                 }
             }
             else
@@ -481,8 +481,7 @@ int plugin_driver_stop(plugin_driver_t *driver)
             continue;
         }
 
-        log_info("Stopping plugin %d/%d: %s", i + 1, driver->plugin_count,
-                 plugin->config.name);
+        log_info("Stopping plugin %d/%d: %s", i + 1, driver->plugin_count, plugin->config.name);
         if (plugin->python_plugin && plugin->python_plugin->pFuncStop)
         {
             PyObject *res = PyObject_CallNoArgs(plugin->python_plugin->pFuncStop);
@@ -635,10 +634,10 @@ void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *
     args->bool_memory = bool_memory;
 
     // Initialize mutex functions
-    args->mutex_take = plugin_mutex_take;
-    args->mutex_give = plugin_mutex_give;
-    args->get_var_list = get_var_list;
-    args->get_var_size = get_var_size;
+    args->mutex_take    = plugin_mutex_take;
+    args->mutex_give    = plugin_mutex_give;
+    args->get_var_list  = get_var_list;
+    args->get_var_size  = get_var_size;
     args->get_var_count = get_var_count;
     // Set buffer mutex from driver
     args->buffer_mutex = &driver->buffer_mutex;
@@ -904,8 +903,8 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
     if (!handle)
     {
         const char *err = dlerror();
-        log_error("Failed to load native plugin '%s': %s",
-                  plugin->config.path, err ? err : "unknown error");
+        log_error("Failed to load native plugin '%s': %s", plugin->config.path,
+                  err ? err : "unknown error");
 #if defined(__CYGWIN__) || defined(_WIN32)
         if (strstr(plugin->config.name, "ethercat") != NULL)
         {
@@ -928,8 +927,8 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
     native_bundle->init = (plugin_init_func_t)dlsym(handle, "init");
     if (!native_bundle->init)
     {
-        log_error("Error: 'init' function not found in native plugin '%s': %s",
-                  plugin->config.path, dlerror());
+        log_error("Error: 'init' function not found in native plugin '%s': %s", plugin->config.path,
+                  dlerror());
         dlclose(handle);
         free(native_bundle);
         return -1;
@@ -1073,8 +1072,6 @@ int plugin_driver_execute_command(plugin_driver_t *driver, const char *plugin_na
     for (int i = 0; i < driver->plugin_count; i++)
     {
         plugin_instance_t *plugin = &driver->plugins[i];
-        if (!plugin->config.enabled)
-            continue;
         if (strcmp(plugin->config.name, plugin_name) != 0)
             continue;
 

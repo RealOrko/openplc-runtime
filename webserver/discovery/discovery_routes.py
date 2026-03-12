@@ -9,7 +9,6 @@ Endpoints:
 """
 
 import json
-from dataclasses import asdict
 
 from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import jwt_required
@@ -17,8 +16,6 @@ from flask_jwt_extended import jwt_required
 from webserver.discovery.ethercat_discovery import (
     DiscoveryStatus,
     _validate_interface_name,
-    list_network_interfaces,
-    test_connection,
     validate_config,
 )
 
@@ -95,9 +92,36 @@ def network_interfaces():
       500:
         description: Error retrieving interfaces
     """
-    result = list_network_interfaces()
-    status_code = 200 if result.get("status") == DiscoveryStatus.SUCCESS.value else 500
-    return jsonify(result), status_code
+    runtime_manager = current_app.config["RUNTIME_MANAGER"]
+
+    result = runtime_manager.send_plugin_command(
+        "ethercat",
+        json.dumps({"command": "list-interfaces"}),
+        timeout=5.0,
+    )
+
+    if "error" in result:
+        return (
+            jsonify(
+                {
+                    "status": DiscoveryStatus.ERROR.value,
+                    "interfaces": [],
+                    "message": result["error"],
+                }
+            ),
+            500,
+        )
+
+    return (
+        jsonify(
+            {
+                "status": result.get("status", "success"),
+                "interfaces": result.get("interfaces", []),
+                "message": result.get("message", ""),
+            }
+        ),
+        200,
+    )
 
 
 @discovery_bp.route("/ethercat/scan", methods=["POST"])
@@ -226,21 +250,31 @@ def ethercat_scan():
     )
 
     if "error" in result:
-        return jsonify({
-            "status": "error",
-            "devices": [],
-            "message": result["error"],
-            "scan_time_ms": 0,
-            "interface": interface,
-        }), 500
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "devices": [],
+                    "message": result["error"],
+                    "scan_time_ms": 0,
+                    "interface": interface,
+                }
+            ),
+            500,
+        )
 
-    return jsonify({
-        "status": result.get("status", "success"),
-        "devices": result.get("devices", []),
-        "message": result.get("message", ""),
-        "scan_time_ms": 0,
-        "interface": interface,
-    }), 200
+    return (
+        jsonify(
+            {
+                "status": result.get("status", "success"),
+                "devices": result.get("devices", []),
+                "message": result.get("message", ""),
+                "scan_time_ms": 0,
+                "interface": interface,
+            }
+        ),
+        200,
+    )
 
 
 @discovery_bp.route("/ethercat/validate", methods=["POST"])
@@ -437,39 +471,46 @@ def ethercat_test():
     if not isinstance(position, int) or position < 1:
         return jsonify({"status": "error", "message": "'position' must be a positive integer"}), 400
 
-    timeout_ms = data.get("timeout_ms", 3000)
-    if not isinstance(timeout_ms, int) or timeout_ms <= 0:
+    is_valid, error_msg = _validate_interface_name(interface)
+    if not is_valid:
+        return jsonify({"status": "error", "message": error_msg}), 400
+
+    runtime_manager = current_app.config["RUNTIME_MANAGER"]
+
+    result = runtime_manager.send_plugin_command(
+        "ethercat",
+        json.dumps(
+            {
+                "command": "test",
+                "params": {"interface": interface, "position": position},
+            }
+        ),
+        timeout=10.0,
+    )
+
+    if "error" in result:
         return (
-            jsonify({"status": "error", "message": "'timeout_ms' must be a positive integer"}),
-            400,
+            jsonify(
+                {
+                    "status": "error",
+                    "connected": False,
+                    "device": None,
+                    "message": result["error"],
+                    "response_time_ms": 0,
+                }
+            ),
+            500,
         )
 
-    result = test_connection(interface, position, timeout_ms)
-
-    # Convert dataclass to dict for JSON response
-    response = {
-        "status": result.status.value,
-        "connected": result.connected,
-        "device": asdict(result.device) if result.device else None,
-        "message": result.message,
-        "response_time_ms": result.response_time_ms,
-    }
-
-    if result.status == DiscoveryStatus.SUCCESS:
-        status_code = 200
-    else:
-        status_code = _status_to_http_code(result.status)
-    return jsonify(response), status_code
-
-
-def _status_to_http_code(status: DiscoveryStatus) -> int:
-    """Convert DiscoveryStatus to appropriate HTTP status code."""
-    status_map = {
-        DiscoveryStatus.SUCCESS: 200,
-        DiscoveryStatus.ERROR: 500,
-        DiscoveryStatus.TIMEOUT: 504,
-        DiscoveryStatus.PERMISSION_DENIED: 403,
-        DiscoveryStatus.INTERFACE_NOT_FOUND: 404,
-        DiscoveryStatus.NOT_AVAILABLE: 503,
-    }
-    return status_map.get(status, 500)
+    return (
+        jsonify(
+            {
+                "status": result.get("status", "success"),
+                "connected": result.get("connected", False),
+                "device": result.get("device"),
+                "message": result.get("message", ""),
+                "response_time_ms": 0,
+            }
+        ),
+        200,
+    )

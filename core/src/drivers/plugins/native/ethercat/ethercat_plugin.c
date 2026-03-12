@@ -12,19 +12,19 @@
 
 #include <ctype.h>
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdbool.h>
 
+#include "cjson/cJSON.h" /* JSON parsing for execute_command */
+#include "ethercat_config.h"
+#include "ethercat_io.h"
+#include "ethercat_master.h"
+#include "ethercat_plugin.h"
 #include "plugin_logger.h"
 #include "plugin_types.h"
-#include "ethercat_plugin.h"
-#include "ethercat_config.h"
-#include "ethercat_master.h"
-#include "ethercat_io.h"
-#include "soem/soem.h"   /* osal_get_monotonic_time, ec_timet */
-#include "cjson/cJSON.h"  /* JSON parsing for execute_command */
+#include "soem/soem.h" /* osal_get_monotonic_time, ec_timet */
 
 /*
  * =============================================================================
@@ -38,17 +38,18 @@
 /** Minimum timeout for receive in microseconds */
 #define ECAT_MIN_RECEIVE_TIMEOUT_US 200
 
-typedef struct {
-    uint64_t cycle_count;         /* total cycles executed              */
-    uint64_t wkc_error_count;     /* total WKC errors (wkc < expected)  */
-    uint64_t noframe_count;       /* total EC_NOFRAME (-1) errors       */
-    uint64_t exchange_ns;         /* last send+receive duration (ns)    */
-    uint64_t io_read_ns;          /* last read_inputs duration (ns)     */
-    uint64_t io_write_ns;         /* last write_outputs duration (ns)   */
-    uint64_t total_ns;            /* last full cycle total (ns)         */
-    uint64_t max_exchange_ns;     /* worst-case send+receive            */
-    uint64_t max_total_ns;        /* worst-case total                   */
-    uint64_t sum_total_ns;        /* running sum for average            */
+typedef struct
+{
+    uint64_t cycle_count;     /* total cycles executed              */
+    uint64_t wkc_error_count; /* total WKC errors (wkc < expected)  */
+    uint64_t noframe_count;   /* total EC_NOFRAME (-1) errors       */
+    uint64_t exchange_ns;     /* last send+receive duration (ns)    */
+    uint64_t io_read_ns;      /* last read_inputs duration (ns)     */
+    uint64_t io_write_ns;     /* last write_outputs duration (ns)   */
+    uint64_t total_ns;        /* last full cycle total (ns)         */
+    uint64_t max_exchange_ns; /* worst-case send+receive            */
+    uint64_t max_total_ns;    /* worst-case total                   */
+    uint64_t sum_total_ns;    /* running sum for average            */
 } ecat_cycle_diag_t;
 
 /**
@@ -78,11 +79,11 @@ static plugin_logger_t g_logger;
 static plugin_runtime_args_t g_runtime_args;
 static ecat_config_t g_config;
 static _Atomic(bool) g_initialized = false;
-static _Atomic(bool) g_running = false;
+static _Atomic(bool) g_running     = false;
 static ecat_channel_map_t g_channel_map;
 static int g_consecutive_wkc_errors = 0;
-static int g_expected_wkc = 0;
-static int g_receive_timeout_us = 0;
+static int g_expected_wkc           = 0;
+static int g_receive_timeout_us     = 0;
 static ecat_cycle_diag_t g_diag;
 
 /*
@@ -100,7 +101,8 @@ int init(void *args)
     plugin_logger_init(&g_logger, "ETHERCAT", NULL);
     plugin_logger_info(&g_logger, "Initializing EtherCAT plugin...");
 
-    if (!args) {
+    if (!args)
+    {
         plugin_logger_error(&g_logger, "init args is NULL");
         return -1;
     }
@@ -115,34 +117,41 @@ int init(void *args)
 
     /* Parse configuration file */
     const char *config_path = g_runtime_args.plugin_specific_config_file_path;
-    if (config_path == NULL || config_path[0] == '\0') {
+    if (config_path == NULL || config_path[0] == '\0')
+    {
         plugin_logger_warn(&g_logger, "No config file specified, using defaults");
         ecat_config_init_defaults(&g_config);
-    } else {
+    }
+    else
+    {
         plugin_logger_info(&g_logger, "Loading config: %s", config_path);
         int result = ecat_config_parse(config_path, &g_config);
-        if (result != ECAT_CONFIG_OK) {
+        if (result != ECAT_CONFIG_OK)
+        {
             plugin_logger_error(&g_logger, "Failed to parse config file (error %d)", result);
             plugin_logger_warn(&g_logger, "Using default configuration");
             ecat_config_init_defaults(&g_config);
-        } else {
+        }
+        else
+        {
             plugin_logger_info(&g_logger, "Configuration loaded successfully");
         }
     }
 
     /* Log configuration summary */
-    plugin_logger_info(&g_logger, "Master config: interface=%s, cycle_time=%d us, watchdog=%d cycles",
-                       g_config.master.interface,
-                       g_config.master.cycle_time_us,
+    plugin_logger_info(&g_logger,
+                       "Master config: interface=%s, cycle_time=%d us, watchdog=%d cycles",
+                       g_config.master.interface, g_config.master.cycle_time_us,
                        g_config.master.watchdog_timeout_cycles);
     plugin_logger_info(&g_logger, "Slaves configured: %d", g_config.slave_count);
 
-    for (int i = 0; i < g_config.slave_count; i++) {
+    for (int i = 0; i < g_config.slave_count; i++)
+    {
         const ecat_slave_t *slave = &g_config.slaves[i];
-        plugin_logger_info(&g_logger, "  Slave %d: %s (%s) vendor=0x%08X product=0x%08X channels=%d",
-                           slave->position, slave->name, slave->type,
-                           slave->vendor_id, slave->product_code,
-                           slave->channel_count);
+        plugin_logger_info(&g_logger,
+                           "  Slave %d: %s (%s) vendor=0x%08X product=0x%08X channels=%d",
+                           slave->position, slave->name, slave->type, slave->vendor_id,
+                           slave->product_code, slave->channel_count);
     }
 
     g_initialized = true;
@@ -156,17 +165,20 @@ int init(void *args)
  */
 void start_loop(void)
 {
-    if (!g_initialized) {
+    if (!g_initialized)
+    {
         plugin_logger_error(&g_logger, "Cannot start - plugin not initialized");
         return;
     }
 
-    if (g_running) {
+    if (g_running)
+    {
         plugin_logger_warn(&g_logger, "EtherCAT master already running");
         return;
     }
 
-    if (g_config.slave_count == 0) {
+    if (g_config.slave_count == 0)
+    {
         plugin_logger_warn(&g_logger, "No slaves configured - EtherCAT master will not start");
         return;
     }
@@ -175,7 +187,8 @@ void start_loop(void)
                        g_config.master.interface);
 
     int result = ecat_master_init(&g_config, &g_logger);
-    if (result != 0) {
+    if (result != 0)
+    {
         plugin_logger_error(&g_logger, "Failed to initialize EtherCAT master (error %d)", result);
         return;
     }
@@ -190,8 +203,8 @@ void start_loop(void)
     g_receive_timeout_us = g_config.master.receive_timeout_us;
     if (g_receive_timeout_us < ECAT_MIN_RECEIVE_TIMEOUT_US)
         g_receive_timeout_us = ECAT_MIN_RECEIVE_TIMEOUT_US;
-    plugin_logger_info(&g_logger, "Receive timeout: %d us (cycle_time=%d us)",
-                       g_receive_timeout_us, g_config.master.cycle_time_us);
+    plugin_logger_info(&g_logger, "Receive timeout: %d us (cycle_time=%d us)", g_receive_timeout_us,
+                       g_config.master.cycle_time_us);
 
     /* Reset cycle state */
     g_consecutive_wkc_errors = 0;
@@ -206,7 +219,8 @@ void start_loop(void)
  */
 void stop_loop(void)
 {
-    if (!g_running) {
+    if (!g_running)
+    {
         plugin_logger_debug(&g_logger, "EtherCAT master already stopped");
         return;
     }
@@ -214,30 +228,30 @@ void stop_loop(void)
     plugin_logger_info(&g_logger, "Stopping EtherCAT master...");
 
     /* Log final diagnostics */
-    if (g_diag.cycle_count > 0 || g_diag.wkc_error_count > 0) {
+    if (g_diag.cycle_count > 0 || g_diag.wkc_error_count > 0)
+    {
         uint64_t total_cycles = g_diag.cycle_count + g_diag.wkc_error_count;
-        uint64_t avg_us = g_diag.cycle_count > 0
-            ? (g_diag.sum_total_ns / g_diag.cycle_count) / 1000 : 0;
+        uint64_t avg_us =
+            g_diag.cycle_count > 0 ? (g_diag.sum_total_ns / g_diag.cycle_count) / 1000 : 0;
         plugin_logger_info(&g_logger,
-            "Final cycle stats: %llu total (%llu ok, %llu errors), "
-            "avg=%llu us, max_total=%llu us, max_exchange=%llu us",
-            (unsigned long long)total_cycles,
-            (unsigned long long)g_diag.cycle_count,
-            (unsigned long long)g_diag.wkc_error_count,
-            (unsigned long long)avg_us,
-            (unsigned long long)(g_diag.max_total_ns / 1000),
-            (unsigned long long)(g_diag.max_exchange_ns / 1000));
-        if (g_diag.wkc_error_count > 0) {
-            plugin_logger_info(&g_logger,
-                "WKC error summary: %llu noframe (-1), error rate=%.1f%%",
-                (unsigned long long)g_diag.noframe_count,
-                total_cycles > 0 ? (g_diag.wkc_error_count * 100.0 / total_cycles) : 0.0);
+                           "Final cycle stats: %llu total (%llu ok, %llu errors), "
+                           "avg=%llu us, max_total=%llu us, max_exchange=%llu us",
+                           (unsigned long long)total_cycles, (unsigned long long)g_diag.cycle_count,
+                           (unsigned long long)g_diag.wkc_error_count, (unsigned long long)avg_us,
+                           (unsigned long long)(g_diag.max_total_ns / 1000),
+                           (unsigned long long)(g_diag.max_exchange_ns / 1000));
+        if (g_diag.wkc_error_count > 0)
+        {
+            plugin_logger_info(&g_logger, "WKC error summary: %llu noframe (-1), error rate=%.1f%%",
+                               (unsigned long long)g_diag.noframe_count,
+                               total_cycles > 0 ? (g_diag.wkc_error_count * 100.0 / total_cycles)
+                                                : 0.0);
         }
     }
 
     memset(&g_channel_map, 0, sizeof(g_channel_map));
     g_consecutive_wkc_errors = 0;
-    g_expected_wkc = 0;
+    g_expected_wkc           = 0;
 
     ecat_master_close(&g_logger);
     g_running = false;
@@ -252,7 +266,8 @@ void cleanup(void)
 {
     plugin_logger_info(&g_logger, "Cleaning up EtherCAT plugin...");
 
-    if (g_running) {
+    if (g_running)
+    {
         stop_loop();
     }
 
@@ -281,41 +296,46 @@ void cycle_start(void)
 
     g_diag.exchange_ns = elapsed_ns(&t0, &t1);
 
-    if (wkc < g_expected_wkc) {
+    if (wkc < g_expected_wkc)
+    {
         g_consecutive_wkc_errors++;
         g_diag.wkc_error_count++;
         if (wkc == EC_NOFRAME)
             g_diag.noframe_count++;
 
-        if (g_consecutive_wkc_errors == 1 || (g_consecutive_wkc_errors % 100) == 0) {
+        if (g_consecutive_wkc_errors == 1 || (g_consecutive_wkc_errors % 100) == 0)
+        {
             plugin_logger_warn(&g_logger,
-                "WKC error: expected %d, got %d (consecutive: %d, "
-                "exchange=%llu us, timeout=%d us)",
-                g_expected_wkc, wkc, g_consecutive_wkc_errors,
-                (unsigned long long)(g_diag.exchange_ns / 1000),
-                g_receive_timeout_us);
+                               "WKC error: expected %d, got %d (consecutive: %d, "
+                               "exchange=%llu us, timeout=%d us)",
+                               g_expected_wkc, wkc, g_consecutive_wkc_errors,
+                               (unsigned long long)(g_diag.exchange_ns / 1000),
+                               g_receive_timeout_us);
 
             /* Log slave states on first error of each burst */
-            if (g_consecutive_wkc_errors == 1) {
-                for (int i = 0; i < g_config.slave_count; i++) {
-                    const ec_slavet *slave =
-                        ecat_master_get_slave(g_config.slaves[i].position);
-                    if (slave) {
+            if (g_consecutive_wkc_errors == 1)
+            {
+                for (int i = 0; i < g_config.slave_count; i++)
+                {
+                    const ec_slavet *slave = ecat_master_get_slave(g_config.slaves[i].position);
+                    if (slave)
+                    {
                         plugin_logger_warn(&g_logger,
-                            "  Slave %d (%s): state=0x%04X, ALstatus=0x%04X",
-                            g_config.slaves[i].position,
-                            g_config.slaves[i].name,
-                            slave->state, slave->ALstatuscode);
+                                           "  Slave %d (%s): state=0x%04X, ALstatus=0x%04X",
+                                           g_config.slaves[i].position, g_config.slaves[i].name,
+                                           slave->state, slave->ALstatuscode);
                     }
                 }
             }
         }
 
         if (g_config.master.watchdog_timeout_cycles > 0 &&
-            g_consecutive_wkc_errors >= g_config.master.watchdog_timeout_cycles) {
-            if (g_consecutive_wkc_errors == g_config.master.watchdog_timeout_cycles) {
-                plugin_logger_error(&g_logger,
-                    "Watchdog triggered: %d consecutive WKC errors exceed threshold %d",
+            g_consecutive_wkc_errors >= g_config.master.watchdog_timeout_cycles)
+        {
+            if (g_consecutive_wkc_errors == g_config.master.watchdog_timeout_cycles)
+            {
+                plugin_logger_error(
+                    &g_logger, "Watchdog triggered: %d consecutive WKC errors exceed threshold %d",
                     g_consecutive_wkc_errors, g_config.master.watchdog_timeout_cycles);
             }
         }
@@ -345,7 +365,8 @@ void cycle_end(void)
 
     /* Skip output update if watchdog has been triggered */
     if (g_config.master.watchdog_timeout_cycles > 0 &&
-        g_consecutive_wkc_errors >= g_config.master.watchdog_timeout_cycles) {
+        g_consecutive_wkc_errors >= g_config.master.watchdog_timeout_cycles)
+    {
         return;
     }
 
@@ -369,32 +390,31 @@ void cycle_end(void)
         g_diag.max_total_ns = g_diag.total_ns;
 
     /* Periodic diagnostics report */
-    if ((g_diag.cycle_count % ECAT_DIAG_REPORT_INTERVAL) == 0) {
+    if ((g_diag.cycle_count % ECAT_DIAG_REPORT_INTERVAL) == 0)
+    {
         uint64_t total_cycles = g_diag.cycle_count + g_diag.wkc_error_count;
-        uint64_t avg_us = (g_diag.sum_total_ns / g_diag.cycle_count) / 1000;
+        uint64_t avg_us       = (g_diag.sum_total_ns / g_diag.cycle_count) / 1000;
         plugin_logger_info(&g_logger,
-            "Cycle stats (%llu total): avg=%llu us, max_total=%llu us, "
-            "max_exchange=%llu us, last=[exch=%llu us, rd=%llu us, wr=%llu us]",
-            (unsigned long long)total_cycles,
-            (unsigned long long)avg_us,
-            (unsigned long long)(g_diag.max_total_ns / 1000),
-            (unsigned long long)(g_diag.max_exchange_ns / 1000),
-            (unsigned long long)(g_diag.exchange_ns / 1000),
-            (unsigned long long)(g_diag.io_read_ns / 1000),
-            (unsigned long long)(g_diag.io_write_ns / 1000));
-        plugin_logger_info(&g_logger,
-            "WKC errors: %llu total, %llu noframe (-1), error rate=%.1f%%",
-            (unsigned long long)g_diag.wkc_error_count,
-            (unsigned long long)g_diag.noframe_count,
+                           "Cycle stats (%llu total): avg=%llu us, max_total=%llu us, "
+                           "max_exchange=%llu us, last=[exch=%llu us, rd=%llu us, wr=%llu us]",
+                           (unsigned long long)total_cycles, (unsigned long long)avg_us,
+                           (unsigned long long)(g_diag.max_total_ns / 1000),
+                           (unsigned long long)(g_diag.max_exchange_ns / 1000),
+                           (unsigned long long)(g_diag.exchange_ns / 1000),
+                           (unsigned long long)(g_diag.io_read_ns / 1000),
+                           (unsigned long long)(g_diag.io_write_ns / 1000));
+        plugin_logger_info(
+            &g_logger, "WKC errors: %llu total, %llu noframe (-1), error rate=%.1f%%",
+            (unsigned long long)g_diag.wkc_error_count, (unsigned long long)g_diag.noframe_count,
             total_cycles > 0 ? (g_diag.wkc_error_count * 100.0 / total_cycles) : 0.0);
 
         /* Reset accumulators to prevent uint64_t overflow on long runs */
-        g_diag.sum_total_ns = 0;
-        g_diag.cycle_count = 0;
+        g_diag.sum_total_ns    = 0;
+        g_diag.cycle_count     = 0;
         g_diag.wkc_error_count = 0;
-        g_diag.noframe_count = 0;
+        g_diag.noframe_count   = 0;
         g_diag.max_exchange_ns = 0;
-        g_diag.max_total_ns = 0;
+        g_diag.max_total_ns    = 0;
     }
 }
 
@@ -405,6 +425,293 @@ void cycle_end(void)
  */
 
 /**
+ * @brief Validate a network interface name
+ *
+ * Checks that the name is non-empty, within IFNAMSIZ-1 (15 chars),
+ * starts with an alpha character, and contains only alphanumeric, '_', or '-'.
+ *
+ * @return 0 if valid, -1 if invalid (writes error JSON to response)
+ */
+static int validate_interface_name(const char *ifname, char *response, size_t response_size)
+{
+    size_t ifname_len = strlen(ifname);
+    if (ifname_len == 0 || ifname_len > 15)
+    { /* IFNAMSIZ - 1 */
+        snprintf(response, response_size, "{\"error\":\"invalid interface name length\"}");
+        return -1;
+    }
+    if (!isalpha((unsigned char)ifname[0]))
+    {
+        snprintf(response, response_size, "{\"error\":\"invalid interface name format\"}");
+        return -1;
+    }
+    for (size_t i = 0; i < ifname_len; i++)
+    {
+        unsigned char c = (unsigned char)ifname[i];
+        if (!isalnum(c) && c != '_' && c != '-')
+        {
+            snprintf(response, response_size, "{\"error\":\"invalid interface name format\"}");
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/**
+ * @brief Handle the "list-interfaces" command
+ *
+ * Uses ec_find_adapters() from SOEM to enumerate network adapters.
+ * Does not require a SOEM context or bus access.
+ */
+static int handle_list_interfaces_command(char *response, size_t response_size)
+{
+    ec_adaptert *adapters = ec_find_adapters();
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddStringToObject(resp, "status", "success");
+    cJSON *ifaces = cJSON_AddArrayToObject(resp, "interfaces");
+
+    int count = 0;
+    for (ec_adaptert *a = adapters; a != NULL; a = a->next)
+    {
+        cJSON *entry = cJSON_CreateObject();
+        cJSON_AddStringToObject(entry, "name", a->name);
+        cJSON_AddStringToObject(entry, "description", a->desc);
+        cJSON_AddItemToArray(ifaces, entry);
+        count++;
+    }
+
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Found %d network interface(s)", count);
+    cJSON_AddStringToObject(resp, "message", msg);
+
+    char *json_str = cJSON_PrintUnformatted(resp);
+    if (json_str)
+    {
+        snprintf(response, response_size, "%s", json_str);
+        free(json_str);
+    }
+    cJSON_Delete(resp);
+    ec_free_adapters(adapters);
+
+    return 0;
+}
+
+/**
+ * @brief Handle the "test" command using a temporary SOEM context
+ *
+ * Creates a separate ecx_contextt to scan the bus and return info about
+ * the slave at the requested position. Same pattern as handle_scan_command.
+ */
+static int handle_test_command(cJSON *root, char *response, size_t response_size)
+{
+    cJSON *params = cJSON_GetObjectItemCaseSensitive(root, "params");
+    cJSON *iface  = params ? cJSON_GetObjectItemCaseSensitive(params, "interface") : NULL;
+    cJSON *pos    = params ? cJSON_GetObjectItemCaseSensitive(params, "position") : NULL;
+
+    if (!iface || !cJSON_IsString(iface))
+    {
+        snprintf(response, response_size, "{\"error\":\"missing 'interface' param\"}");
+        return -1;
+    }
+    if (!pos || !cJSON_IsNumber(pos))
+    {
+        snprintf(response, response_size, "{\"error\":\"missing 'position' param\"}");
+        return -1;
+    }
+
+    int position = pos->valueint;
+    if (position < 1)
+    {
+        snprintf(response, response_size, "{\"error\":\"'position' must be a positive integer\"}");
+        return -1;
+    }
+
+    if (validate_interface_name(iface->valuestring, response, response_size) != 0)
+        return -1;
+
+    if (g_running)
+    {
+        snprintf(response, response_size,
+                 "{\"error\":\"EtherCAT master is running. Stop the PLC before testing.\"}");
+        return -1;
+    }
+
+    ecx_contextt test_ctx;
+    memset(&test_ctx, 0, sizeof(test_ctx));
+
+    if (!ecx_init(&test_ctx, iface->valuestring))
+    {
+        snprintf(response, response_size, "{\"error\":\"Failed to open interface '%s'\"}",
+                 iface->valuestring);
+        return -1;
+    }
+
+    int slave_count = ecx_config_init(&test_ctx);
+    if (slave_count <= 0)
+    {
+        ecx_close(&test_ctx);
+        snprintf(response, response_size,
+                 "{\"status\":\"success\",\"connected\":false,\"device\":null,"
+                 "\"message\":\"No EtherCAT slaves found on the network\"}");
+        return 0;
+    }
+
+    if (position > test_ctx.slavecount)
+    {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "No device at position %d. Found %d slave(s).", position,
+                 test_ctx.slavecount);
+        ecx_close(&test_ctx);
+        snprintf(response, response_size,
+                 "{\"status\":\"error\",\"connected\":false,\"device\":null,"
+                 "\"message\":\"%s\"}",
+                 msg);
+        return -1;
+    }
+
+    ec_slavet *s = &test_ctx.slavelist[position];
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddStringToObject(resp, "status", "success");
+    cJSON_AddBoolToObject(resp, "connected", 1);
+
+    cJSON *dev = cJSON_CreateObject();
+    cJSON_AddNumberToObject(dev, "position", position);
+    cJSON_AddStringToObject(dev, "name", s->name);
+    cJSON_AddNumberToObject(dev, "vendor_id", s->eep_man);
+    cJSON_AddNumberToObject(dev, "product_code", s->eep_id);
+    cJSON_AddNumberToObject(dev, "revision", s->eep_rev);
+    cJSON_AddNumberToObject(dev, "serial_number", s->eep_ser);
+    cJSON_AddStringToObject(dev, "state", "UNKNOWN");
+    cJSON_AddNumberToObject(dev, "al_status_code", 0);
+    cJSON_AddBoolToObject(dev, "has_coe", (s->mbx_proto & 0x04) != 0);
+    cJSON_AddNumberToObject(dev, "input_bytes", 0);
+    cJSON_AddNumberToObject(dev, "output_bytes", 0);
+    cJSON_AddItemToObject(resp, "device", dev);
+
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Successfully connected to %s at position %d", s->name, position);
+    cJSON_AddStringToObject(resp, "message", msg);
+
+    char *json_str = cJSON_PrintUnformatted(resp);
+    if (json_str)
+    {
+        snprintf(response, response_size, "%s", json_str);
+        free(json_str);
+    }
+    cJSON_Delete(resp);
+
+    ecx_close(&test_ctx);
+    return 0;
+}
+
+/**
+ * @brief Handle the "status" command - report runtime state and diagnostics
+ *
+ * Returns the current plugin state, per-slave status (when running),
+ * and cycle performance metrics. Used by the Editor's runtime status panel.
+ */
+static int handle_status_command(char *response, size_t response_size)
+{
+    cJSON *resp = cJSON_CreateObject();
+
+    /* Plugin state */
+    const char *state;
+    if (g_running)
+        state = "OPERATIONAL";
+    else if (g_initialized)
+        state = "IDLE";
+    else
+        state = "STOPPED";
+    cJSON_AddStringToObject(resp, "plugin_state", state);
+
+    cJSON_AddNumberToObject(resp, "slave_count", g_config.slave_count);
+    cJSON_AddNumberToObject(resp, "expected_wkc", g_expected_wkc);
+
+    /* Per-slave status */
+    cJSON *slaves = cJSON_AddArrayToObject(resp, "slaves");
+    for (int i = 0; i < g_config.slave_count; i++)
+    {
+        const ecat_slave_t *cfg_slave = &g_config.slaves[i];
+        cJSON *s                      = cJSON_CreateObject();
+        cJSON_AddNumberToObject(s, "position", cfg_slave->position);
+        cJSON_AddStringToObject(s, "name", cfg_slave->name);
+
+        if (g_running)
+        {
+            const ec_slavet *hw = ecat_master_get_slave(cfg_slave->position);
+            if (hw)
+            {
+                const char *sl_state = "UNKNOWN";
+                switch (hw->state)
+                {
+                case 0x01:
+                    sl_state = "INIT";
+                    break;
+                case 0x02:
+                    sl_state = "PRE-OP";
+                    break;
+                case 0x03:
+                    sl_state = "BOOT";
+                    break;
+                case 0x04:
+                    sl_state = "SAFE-OP";
+                    break;
+                case 0x08:
+                    sl_state = "OP";
+                    break;
+                default:
+                    break;
+                }
+                cJSON_AddStringToObject(s, "state", sl_state);
+                cJSON_AddNumberToObject(s, "al_status_code", hw->ALstatuscode);
+                cJSON_AddNumberToObject(s, "error_count", 0);
+                cJSON_AddBoolToObject(s, "has_error", hw->ALstatuscode != 0);
+            }
+            else
+            {
+                cJSON_AddStringToObject(s, "state", "UNKNOWN");
+                cJSON_AddNumberToObject(s, "al_status_code", 0);
+                cJSON_AddNumberToObject(s, "error_count", 0);
+                cJSON_AddBoolToObject(s, "has_error", 0);
+            }
+        }
+        else
+        {
+            cJSON_AddStringToObject(s, "state", "NONE");
+            cJSON_AddNumberToObject(s, "al_status_code", 0);
+            cJSON_AddNumberToObject(s, "error_count", 0);
+            cJSON_AddBoolToObject(s, "has_error", 0);
+        }
+        cJSON_AddItemToArray(slaves, s);
+    }
+
+    /* Cycle metrics */
+    cJSON *metrics        = cJSON_CreateObject();
+    uint64_t total_cycles = g_diag.cycle_count + g_diag.wkc_error_count;
+    uint64_t avg_us =
+        g_diag.cycle_count > 0 ? (g_diag.sum_total_ns / g_diag.cycle_count) / 1000 : 0;
+    cJSON_AddNumberToObject(metrics, "cycle_count", (double)total_cycles);
+    cJSON_AddNumberToObject(metrics, "wkc_error_count", (double)g_diag.wkc_error_count);
+    cJSON_AddNumberToObject(metrics, "avg_cycle_us", (double)avg_us);
+    cJSON_AddNumberToObject(metrics, "max_cycle_us", (double)(g_diag.max_total_ns / 1000));
+    cJSON_AddNumberToObject(metrics, "max_exchange_us", (double)(g_diag.max_exchange_ns / 1000));
+    cJSON_AddNumberToObject(metrics, "consecutive_wkc_errors", g_consecutive_wkc_errors);
+    cJSON_AddNumberToObject(metrics, "recovery_attempts", 0);
+    cJSON_AddItemToObject(resp, "metrics", metrics);
+
+    char *json_str = cJSON_PrintUnformatted(resp);
+    if (json_str)
+    {
+        snprintf(response, response_size, "%s", json_str);
+        free(json_str);
+    }
+    cJSON_Delete(resp);
+    return 0;
+}
+
+/**
  * @brief Handle the "scan" command using a temporary SOEM context
  *
  * Creates a separate ecx_contextt (not the master's g_ecx_context) to scan
@@ -413,36 +720,22 @@ void cycle_end(void)
 static int handle_scan_command(cJSON *root, char *response, size_t response_size)
 {
     cJSON *params = cJSON_GetObjectItemCaseSensitive(root, "params");
-    cJSON *iface = params ? cJSON_GetObjectItemCaseSensitive(params, "interface") : NULL;
+    cJSON *iface  = params ? cJSON_GetObjectItemCaseSensitive(params, "interface") : NULL;
 
-    if (!iface || !cJSON_IsString(iface)) {
+    if (!iface || !cJSON_IsString(iface))
+    {
         snprintf(response, response_size, "{\"error\":\"missing 'interface' param\"}");
         return -1;
     }
 
-    /* Validate interface name (mirrors _validate_interface_name in Python) */
-    const char *ifname = iface->valuestring;
-    size_t ifname_len = strlen(ifname);
-    if (ifname_len == 0 || ifname_len > 15) { /* IFNAMSIZ - 1 */
-        snprintf(response, response_size, "{\"error\":\"invalid interface name length\"}");
+    if (validate_interface_name(iface->valuestring, response, response_size) != 0)
         return -1;
-    }
-    if (!isalpha((unsigned char)ifname[0])) {
-        snprintf(response, response_size, "{\"error\":\"invalid interface name format\"}");
-        return -1;
-    }
-    for (size_t i = 0; i < ifname_len; i++) {
-        unsigned char c = (unsigned char)ifname[i];
-        if (!isalnum(c) && c != '_' && c != '-') {
-            snprintf(response, response_size, "{\"error\":\"invalid interface name format\"}");
-            return -1;
-        }
-    }
 
     /* Refuse scan while master is actively running on the bus */
-    if (g_running) {
+    if (g_running)
+    {
         snprintf(response, response_size,
-            "{\"error\":\"EtherCAT master is running. Stop the PLC before scanning.\"}");
+                 "{\"error\":\"EtherCAT master is running. Stop the PLC before scanning.\"}");
         return -1;
     }
 
@@ -450,17 +743,20 @@ static int handle_scan_command(cJSON *root, char *response, size_t response_size
     ecx_contextt scan_ctx;
     memset(&scan_ctx, 0, sizeof(scan_ctx));
 
-    if (!ecx_init(&scan_ctx, iface->valuestring)) {
-        snprintf(response, response_size,
-            "{\"error\":\"Failed to open interface '%s'\"}", iface->valuestring);
+    if (!ecx_init(&scan_ctx, iface->valuestring))
+    {
+        snprintf(response, response_size, "{\"error\":\"Failed to open interface '%s'\"}",
+                 iface->valuestring);
         return -1;
     }
 
     int slave_count = ecx_config_init(&scan_ctx);
-    if (slave_count <= 0) {
+    if (slave_count <= 0)
+    {
         ecx_close(&scan_ctx);
         snprintf(response, response_size,
-            "{\"status\":\"success\",\"devices\":[],\"message\":\"No slaves found\",\"slave_count\":0}");
+                 "{\"status\":\"success\",\"devices\":[],\"message\":\"No slaves "
+                 "found\",\"slave_count\":0}");
         return 0;
     }
 
@@ -469,9 +765,10 @@ static int handle_scan_command(cJSON *root, char *response, size_t response_size
     cJSON_AddStringToObject(resp, "status", "success");
     cJSON *devices = cJSON_AddArrayToObject(resp, "devices");
 
-    for (int i = 1; i <= scan_ctx.slavecount; i++) {
+    for (int i = 1; i <= scan_ctx.slavecount; i++)
+    {
         ec_slavet *s = &scan_ctx.slavelist[i];
-        cJSON *dev = cJSON_CreateObject();
+        cJSON *dev   = cJSON_CreateObject();
         cJSON_AddNumberToObject(dev, "position", i);
         cJSON_AddStringToObject(dev, "name", s->name);
         cJSON_AddNumberToObject(dev, "vendor_id", s->eep_man);
@@ -492,7 +789,8 @@ static int handle_scan_command(cJSON *root, char *response, size_t response_size
     cJSON_AddNumberToObject(resp, "slave_count", scan_ctx.slavecount);
 
     char *json_str = cJSON_PrintUnformatted(resp);
-    if (json_str) {
+    if (json_str)
+    {
         snprintf(response, response_size, "%s", json_str);
         free(json_str);
     }
@@ -508,22 +806,39 @@ static int handle_scan_command(cJSON *root, char *response, size_t response_size
 int execute_command(const char *command_json, char *response, size_t response_size)
 {
     cJSON *root = cJSON_Parse(command_json);
-    if (!root) {
+    if (!root)
+    {
         snprintf(response, response_size, "{\"error\":\"invalid JSON\"}");
         return -1;
     }
 
     cJSON *cmd = cJSON_GetObjectItemCaseSensitive(root, "command");
-    if (!cmd || !cJSON_IsString(cmd)) {
+    if (!cmd || !cJSON_IsString(cmd))
+    {
         cJSON_Delete(root);
         snprintf(response, response_size, "{\"error\":\"missing 'command' field\"}");
         return -1;
     }
 
     int result = -1;
-    if (strcmp(cmd->valuestring, "scan") == 0) {
+    if (strcmp(cmd->valuestring, "scan") == 0)
+    {
         result = handle_scan_command(root, response, response_size);
-    } else {
+    }
+    else if (strcmp(cmd->valuestring, "list-interfaces") == 0)
+    {
+        result = handle_list_interfaces_command(response, response_size);
+    }
+    else if (strcmp(cmd->valuestring, "test") == 0)
+    {
+        result = handle_test_command(root, response, response_size);
+    }
+    else if (strcmp(cmd->valuestring, "status") == 0)
+    {
+        result = handle_status_command(response, response_size);
+    }
+    else
+    {
         snprintf(response, response_size, "{\"error\":\"unknown command '%s'\"}", cmd->valuestring);
     }
 
