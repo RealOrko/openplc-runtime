@@ -21,6 +21,8 @@ typedef void (*plugin_stop_loop_func_t)(void);
 typedef void (*plugin_cycle_start_func_t)(void);
 typedef void (*plugin_cycle_end_func_t)(void);
 typedef void (*plugin_cleanup_func_t)(void);
+typedef int (*plugin_execute_command_func_t)(const char *command_json, char *response,
+                                             size_t response_size);
 
 typedef struct
 {
@@ -31,6 +33,7 @@ typedef struct
     plugin_cycle_start_func_t cycle_start;
     plugin_cycle_end_func_t cycle_end;
     plugin_cleanup_func_t cleanup;
+    plugin_execute_command_func_t execute_command;
 } plugin_funct_bundle_t;
 
 // Plugin instance structure
@@ -68,6 +71,10 @@ int plugin_mutex_give(pthread_mutex_t *mutex);
 // Plugins opt-in by implementing cycle_start/cycle_end; opt-out by not implementing them
 void plugin_driver_cycle_start(plugin_driver_t *driver);
 void plugin_driver_cycle_end(plugin_driver_t *driver);
+
+// Route a command to a specific plugin by name (for async commands like scan)
+int plugin_driver_execute_command(plugin_driver_t *driver, const char *plugin_name,
+                                  const char *command_json, char *response, size_t response_size);
 
 // Python plugin functions
 int python_plugin_get_symbols(plugin_instance_t *plugin);

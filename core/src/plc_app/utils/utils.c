@@ -1,5 +1,11 @@
+// _GNU_SOURCE is required for pthread_setaffinity_np and CPU_SET macros
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "utils.h"
 #include <errno.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -7,6 +13,7 @@
 // MSYS2/Cygwin does not support mlockall or real-time scheduling
 // These features are only available on Linux
 #if !defined(__CYGWIN__) && !defined(__MSYS__)
+#include <sched.h>
 #include <sys/mman.h>
 #define HAS_REALTIME_FEATURES 1
 #else
@@ -65,7 +72,7 @@ void timespec_diff(struct timespec *a, struct timespec *b, struct timespec *resu
     }
 }
 
-// configure SCHED_FIFO priority
+// configure SCHED_FIFO priority and pin to the highest-numbered CPU core
 void set_realtime_priority(void)
 {
 #if HAS_REALTIME_FEATURES
@@ -79,6 +86,48 @@ void set_realtime_priority(void)
     else
     {
         log_info("Scheduler set to SCHED_FIFO, priority %d", param.sched_priority);
+    }
+
+    // Pin PLC thread to the highest-numbered CPU core.
+    // On a 4-core system (0-3) this selects core 3, which is the best
+    // candidate for isolation (isolcpus= boot parameter).
+    // If the core is not available (e.g. Docker --cpuset-cpus restricts
+    // the set), fall back to the last available core in the affinity mask.
+    int num_cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    if (num_cpus > 1)
+    {
+        cpu_set_t available;
+        CPU_ZERO(&available);
+        if (sched_getaffinity(0, sizeof(available), &available) == 0)
+        {
+            // Find the highest available core
+            int target_cpu = -1;
+            for (int i = num_cpus - 1; i >= 0; i--)
+            {
+                if (CPU_ISSET(i, &available))
+                {
+                    target_cpu = i;
+                    break;
+                }
+            }
+
+            if (target_cpu >= 0)
+            {
+                cpu_set_t cpuset;
+                CPU_ZERO(&cpuset);
+                CPU_SET(target_cpu, &cpuset);
+                if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) == 0)
+                {
+                    log_info("PLC thread pinned to CPU %d (of %d available)",
+                             target_cpu, num_cpus);
+                }
+                else
+                {
+                    log_warn("Failed to pin PLC thread to CPU %d: %s",
+                             target_cpu, strerror(errno));
+                }
+            }
+        }
     }
 #else
     // Real-time scheduling not available on MSYS2/Cygwin
@@ -101,6 +150,29 @@ void lock_memory(void)
 #else
     // Memory locking not available on MSYS2/Cygwin
     log_info("Memory locking not available on this platform");
+#endif
+}
+
+int init_rt_mutex(pthread_mutex_t *mutex)
+{
+#if HAS_REALTIME_FEATURES
+    pthread_mutexattr_t attr;
+    if (pthread_mutexattr_init(&attr) != 0)
+        return -1;
+    if (pthread_mutexattr_setprotocol(&attr, PTHREAD_PRIO_INHERIT) != 0)
+    {
+        pthread_mutexattr_destroy(&attr);
+        return -1;
+    }
+    if (pthread_mutex_init(mutex, &attr) != 0)
+    {
+        pthread_mutexattr_destroy(&attr);
+        return -1;
+    }
+    pthread_mutexattr_destroy(&attr);
+    return 0;
+#else
+    return pthread_mutex_init(mutex, NULL);
 #endif
 }
 

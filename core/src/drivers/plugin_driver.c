@@ -16,6 +16,7 @@
 #include "../plc_app/image_tables.h"
 #include "../plc_app/journal_buffer.h"
 #include "../plc_app/utils/log.h"
+#include "../plc_app/utils/utils.h"
 #include "plugin_config.h"
 #include "plugin_driver.h"
 #include "plugin_utils.h"
@@ -56,42 +57,12 @@ plugin_driver_t *plugin_driver_create(void)
         return NULL;
     }
 
-#if !defined(__CYGWIN__) && !defined(__MSYS__)
     // Initialize mutex with priority inheritance to prevent priority inversion
-    // This ensures that when a lower-priority plugin thread holds the mutex,
-    // it temporarily inherits the priority of any higher-priority thread
-    // (like the PLC scan cycle thread) waiting for the mutex.
-    // Note: Priority inheritance is not available on MSYS2/Cygwin
-    pthread_mutexattr_t mutex_attr;
-    if (pthread_mutexattr_init(&mutex_attr) != 0)
+    if (init_rt_mutex(&driver->buffer_mutex) != 0)
     {
         free(driver);
         return NULL;
     }
-
-    if (pthread_mutexattr_setprotocol(&mutex_attr, PTHREAD_PRIO_INHERIT) != 0)
-    {
-        pthread_mutexattr_destroy(&mutex_attr);
-        free(driver);
-        return NULL;
-    }
-
-    if (pthread_mutex_init(&driver->buffer_mutex, &mutex_attr) != 0)
-    {
-        pthread_mutexattr_destroy(&mutex_attr);
-        free(driver);
-        return NULL;
-    }
-
-    pthread_mutexattr_destroy(&mutex_attr);
-#else
-    // On MSYS2/Cygwin, use a regular mutex without priority inheritance
-    if (pthread_mutex_init(&driver->buffer_mutex, NULL) != 0)
-    {
-        free(driver);
-        return NULL;
-    }
-#endif
 
     return driver;
 }
@@ -282,7 +253,7 @@ int plugin_driver_init(plugin_driver_t *driver)
     // Only acquire Python GIL if we have Python plugins and Python is initialized
     // Initialize to PyGILState_LOCKED (0) to satisfy compiler warning
     PyGILState_STATE local_gstate = PyGILState_LOCKED;
-    int have_gil = has_python_plugin && Py_IsInitialized();
+    int have_gil                  = has_python_plugin && Py_IsInitialized();
     if (have_gil)
     {
         local_gstate = PyGILState_Ensure();
@@ -455,8 +426,8 @@ int plugin_driver_start(plugin_driver_t *driver)
                 }
                 else
                 {
-                    log_error("Native plugin %s failed to start (returned %d)",
-                              plugin->config.name, result);
+                    log_error("Native plugin %s failed to start (returned %d)", plugin->config.name,
+                              result);
                 }
             }
             else
@@ -510,8 +481,7 @@ int plugin_driver_stop(plugin_driver_t *driver)
             continue;
         }
 
-        log_info("Stopping plugin %d/%d: %s", i + 1, driver->plugin_count,
-                 plugin->config.name);
+        log_info("Stopping plugin %d/%d: %s", i + 1, driver->plugin_count, plugin->config.name);
         if (plugin->python_plugin && plugin->python_plugin->pFuncStop)
         {
             PyObject *res = PyObject_CallNoArgs(plugin->python_plugin->pFuncStop);
@@ -664,10 +634,10 @@ void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *
     args->bool_memory = bool_memory;
 
     // Initialize mutex functions
-    args->mutex_take = plugin_mutex_take;
-    args->mutex_give = plugin_mutex_give;
-    args->get_var_list = get_var_list;
-    args->get_var_size = get_var_size;
+    args->mutex_take    = plugin_mutex_take;
+    args->mutex_give    = plugin_mutex_give;
+    args->get_var_list  = get_var_list;
+    args->get_var_size  = get_var_size;
     args->get_var_count = get_var_count;
     // Set buffer mutex from driver
     args->buffer_mutex = &driver->buffer_mutex;
@@ -932,7 +902,16 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
     void *handle = dlopen(plugin->config.path, RTLD_LOCAL | RTLD_NOW);
     if (!handle)
     {
-        log_error("Failed to load native plugin '%s': %s", plugin->config.path, dlerror());
+        const char *err = dlerror();
+        log_error("Failed to load native plugin '%s': %s", plugin->config.path,
+                  err ? err : "unknown error");
+#if defined(__CYGWIN__) || defined(_WIN32)
+        if (strstr(plugin->config.name, "ethercat") != NULL)
+        {
+            log_error("The EtherCAT plugin requires Npcap (https://npcap.com) to access "
+                      "the network interface. Please install Npcap and restart the runtime.");
+        }
+#endif
         free(native_bundle);
         return -1;
     }
@@ -948,8 +927,8 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
     native_bundle->init = (plugin_init_func_t)dlsym(handle, "init");
     if (!native_bundle->init)
     {
-        log_error("Error: 'init' function not found in native plugin '%s': %s",
-                  plugin->config.path, dlerror());
+        log_error("Error: 'init' function not found in native plugin '%s': %s", plugin->config.path,
+                  dlerror());
         dlclose(handle);
         free(native_bundle);
         return -1;
@@ -991,6 +970,14 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
                  plugin->config.path);
     }
 
+    native_bundle->execute_command =
+        (plugin_execute_command_func_t)dlsym(handle, "execute_command");
+    if (!native_bundle->execute_command)
+    {
+        log_warn("'execute_command' function not found in native plugin '%s' (optional)",
+                 plugin->config.path);
+    }
+
     // Store the native bundle and handle in the plugin instance
     plugin->native_plugin = native_bundle;
 
@@ -1001,6 +988,7 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
     log_info("  - cycle_start: %s", native_bundle->cycle_start ? "(PASS)" : "(FAIL)");
     log_info("  - cycle_end: %s", native_bundle->cycle_end ? "(PASS)" : "(FAIL)");
     log_info("  - cleanup: %s", native_bundle->cleanup ? "(PASS)" : "(FAIL)");
+    log_info("  - execute_command: %s", native_bundle->execute_command ? "(PASS)" : "(FAIL)");
 
     return 0;
 }
@@ -1069,6 +1057,37 @@ void plugin_driver_cycle_end(plugin_driver_t *driver)
             plugin->native_plugin->cycle_end();
         }
     }
+}
+
+// Route a command to a specific plugin by name
+int plugin_driver_execute_command(plugin_driver_t *driver, const char *plugin_name,
+                                  const char *command_json, char *response, size_t response_size)
+{
+    if (!driver || !plugin_name || !command_json)
+    {
+        snprintf(response, response_size, "{\"error\":\"invalid arguments\"}");
+        return -1;
+    }
+
+    for (int i = 0; i < driver->plugin_count; i++)
+    {
+        plugin_instance_t *plugin = &driver->plugins[i];
+        if (strcmp(plugin->config.name, plugin_name) != 0)
+            continue;
+
+        if (plugin->config.type == PLUGIN_TYPE_NATIVE && plugin->native_plugin &&
+            plugin->native_plugin->execute_command)
+        {
+            return plugin->native_plugin->execute_command(command_json, response, response_size);
+        }
+
+        snprintf(response, response_size,
+                 "{\"error\":\"plugin '%s' does not support execute_command\"}", plugin_name);
+        return -1;
+    }
+
+    snprintf(response, response_size, "{\"error\":\"plugin '%s' not found\"}", plugin_name);
+    return -1;
 }
 
 // Cleanup Python plugin
