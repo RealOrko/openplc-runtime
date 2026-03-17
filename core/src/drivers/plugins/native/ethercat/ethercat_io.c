@@ -121,31 +121,35 @@ int ecat_io_parse_iec_location(const char *loc_str, iec_location_t *loc)
  */
 
 /**
- * @brief Walk PDO entries to find the IOmap pointer and bit offset for a channel
+ * @brief Walk PDO entries to find the IOmap offset and bit offset for a channel
  *
  * For a given channel (identified by pdo_index + pdo_entry_index + pdo_entry_subindex),
  * accumulates bit lengths through the PDO list until the target entry is found.
+ * Returns an offset relative to the IOmap base rather than an absolute pointer,
+ * allowing the same map to work with both the real IOmap and a shadow buffer.
  *
- * @param soem_slave  Live SOEM slave descriptor (provides outputs/inputs base pointer)
- * @param cfg_slave   Configured slave (provides PDO lists from JSON)
- * @param channel     Channel to locate
- * @param is_output   true if channel is an output (RxPDO), false for input (TxPDO)
- * @param out_ptr       [out] pointer into IOmap buffer
- * @param out_bit       [out] bit offset within *out_ptr (0-7)
+ * @param soem_slave    Live SOEM slave descriptor (provides outputs/inputs base pointer)
+ * @param iomap_base    Base address of the IOmap buffer (for offset calculation)
+ * @param cfg_slave     Configured slave (provides PDO lists from JSON)
+ * @param channel       Channel to locate
+ * @param is_output     true if channel is an output (RxPDO), false for input (TxPDO)
+ * @param out_offset    [out] byte offset from iomap_base
+ * @param out_bit       [out] bit offset within the byte (0-7)
  * @param out_data_type [out] parsed data type from the matching PDO entry (may be NULL)
  * @return 0 on success, -1 if channel's PDO entry was not found
  */
 static int calculate_iomap_offset(const ec_slavet *soem_slave,
+                                  const uint8_t *iomap_base,
                                   const ecat_slave_t *cfg_slave,
                                   const ecat_channel_t *channel,
                                   bool is_output,
-                                  uint8_t **out_ptr,
+                                  size_t *out_offset,
                                   int *out_bit,
                                   ecat_data_type_t *out_data_type)
 {
     /* Select PDO direction:
-     *   Output channels → RxPDOs (master writes to slave) → soem_slave->outputs
-     *   Input channels  → TxPDOs (slave sends to master)  → soem_slave->inputs
+     *   Output channels -> RxPDOs (master writes to slave) -> soem_slave->outputs
+     *   Input channels  -> TxPDOs (slave sends to master)  -> soem_slave->inputs
      */
     const ecat_pdo_t *pdos;
     int pdo_count;
@@ -167,6 +171,9 @@ static int calculate_iomap_offset(const ec_slavet *soem_slave,
     if (!base_ptr)
         return -1;
 
+    /* Calculate byte offset of slave's data area relative to IOmap base */
+    size_t slave_base_offset = (size_t)(base_ptr - iomap_base);
+
     int accumulated_bits = start_bit;
 
     for (int p = 0; p < pdo_count; p++) {
@@ -178,7 +185,7 @@ static int calculate_iomap_offset(const ec_slavet *soem_slave,
             if (strcmp(pdo->index, channel->pdo_index) == 0 &&
                 strcmp(entry->index, channel->pdo_entry_index) == 0 &&
                 entry->subindex == channel->pdo_entry_subindex) {
-                *out_ptr = base_ptr + (accumulated_bits / 8);
+                *out_offset = slave_base_offset + (accumulated_bits / 8);
                 *out_bit = accumulated_bits % 8;
                 if (out_data_type)
                     *out_data_type = entry->parsed_type;
@@ -271,6 +278,13 @@ int ecat_io_build_channel_map(const ecat_config_t *config,
 {
     memset(map, 0, sizeof(*map));
 
+    /* Get IOmap base for offset calculation */
+    uint8_t *iomap_base = ecat_master_get_iomap();
+    if (!iomap_base) {
+        plugin_logger_error(logger, "IOmap base pointer is NULL");
+        return -1;
+    }
+
     int errors = 0;
     int mapped = 0;
 
@@ -320,11 +334,11 @@ int ecat_io_build_channel_map(const ecat_config_t *config,
             bool is_output = (strstr(ch->type, "output") != NULL);
 
             /* Calculate IOmap offset by walking PDO entries */
-            uint8_t *iomap_ptr = NULL;
+            size_t iomap_offset = 0;
             int iomap_bit = 0;
             ecat_data_type_t pdo_data_type = ECAT_DTYPE_UNKNOWN;
-            if (calculate_iomap_offset(soem_slave, cfg_slave, ch, is_output,
-                                       &iomap_ptr, &iomap_bit,
+            if (calculate_iomap_offset(soem_slave, iomap_base, cfg_slave, ch,
+                                       is_output, &iomap_offset, &iomap_bit,
                                        &pdo_data_type) != 0) {
                 plugin_logger_warn(logger,
                     "Slave '%s' channel '%s': PDO entry not found "
@@ -349,7 +363,7 @@ int ecat_io_build_channel_map(const ecat_config_t *config,
 
             /* Build the map entry */
             ecat_channel_map_entry_t entry;
-            entry.iomap_ptr        = iomap_ptr;
+            entry.iomap_offset     = iomap_offset;
             entry.iomap_bit_offset = iomap_bit;
             entry.bit_length       = ch->bit_length;
             entry.size             = iec_loc.size;
@@ -379,11 +393,11 @@ int ecat_io_build_channel_map(const ecat_config_t *config,
             }
 
             plugin_logger_debug(logger,
-                "  Mapped: slave '%s' ch '%s' [%s] (%s) -> %s byte=%d bit=%d",
+                "  Mapped: slave '%s' ch '%s' [%s] (%s) -> %s byte=%d bit=%d offset=%zu",
                 cfg_slave->name, ch->name,
                 ecat_data_type_name(pdo_data_type), ch->iec_location,
                 (iec_loc.direction == IEC_DIR_INPUT) ? "INPUT" : "OUTPUT",
-                iec_loc.byte_index, iec_loc.bit_index);
+                iec_loc.byte_index, iec_loc.bit_index, iomap_offset);
         }
     }
 
@@ -406,10 +420,12 @@ int ecat_io_build_channel_map(const ecat_config_t *config,
  * which holds buffer_mutex across the entire scan cycle.
  */
 void ecat_io_read_inputs(const ecat_channel_map_t *map,
+                         const uint8_t *iomap_base,
                          plugin_runtime_args_t *args)
 {
     for (int i = 0; i < map->input_count; i++) {
         const ecat_channel_map_entry_t *e = &map->inputs[i];
+        const uint8_t *ptr = iomap_base + e->iomap_offset;
 
         switch (e->size) {
         case IEC_SIZE_BIT:
@@ -417,31 +433,31 @@ void ecat_io_read_inputs(const ecat_channel_map_t *map,
                 args->bool_input[e->byte_index] &&
                 args->bool_input[e->byte_index][e->bit_index]) {
                 *args->bool_input[e->byte_index][e->bit_index] =
-                    iomap_read_bit(e->iomap_ptr, e->iomap_bit_offset);
+                    iomap_read_bit(ptr, e->iomap_bit_offset);
             }
             break;
 
         case IEC_SIZE_BYTE:
             if (args->byte_input && args->byte_input[e->byte_index]) {
-                *args->byte_input[e->byte_index] = *e->iomap_ptr;
+                *args->byte_input[e->byte_index] = *ptr;
             }
             break;
 
         case IEC_SIZE_WORD:
             if (args->int_input && args->int_input[e->byte_index]) {
-                memcpy(args->int_input[e->byte_index], e->iomap_ptr, 2);
+                memcpy(args->int_input[e->byte_index], ptr, 2);
             }
             break;
 
         case IEC_SIZE_DWORD:
             if (args->dint_input && args->dint_input[e->byte_index]) {
-                memcpy(args->dint_input[e->byte_index], e->iomap_ptr, 4);
+                memcpy(args->dint_input[e->byte_index], ptr, 4);
             }
             break;
 
         case IEC_SIZE_LWORD:
             if (args->lint_input && args->lint_input[e->byte_index]) {
-                memcpy(args->lint_input[e->byte_index], e->iomap_ptr, 8);
+                memcpy(args->lint_input[e->byte_index], ptr, 8);
             }
             break;
         }
@@ -454,44 +470,205 @@ void ecat_io_read_inputs(const ecat_channel_map_t *map,
  * which holds buffer_mutex across the entire scan cycle.
  */
 void ecat_io_write_outputs(const ecat_channel_map_t *map,
+                           uint8_t *iomap_base,
                            plugin_runtime_args_t *args)
 {
     for (int i = 0; i < map->output_count; i++) {
         const ecat_channel_map_entry_t *e = &map->outputs[i];
+        uint8_t *ptr = iomap_base + e->iomap_offset;
 
         switch (e->size) {
         case IEC_SIZE_BIT:
             if (args->bool_output &&
                 args->bool_output[e->byte_index] &&
                 args->bool_output[e->byte_index][e->bit_index]) {
-                iomap_write_bit(e->iomap_ptr, e->iomap_bit_offset,
+                iomap_write_bit(ptr, e->iomap_bit_offset,
                                 *args->bool_output[e->byte_index][e->bit_index]);
             }
             break;
 
         case IEC_SIZE_BYTE:
             if (args->byte_output && args->byte_output[e->byte_index]) {
-                *e->iomap_ptr = *args->byte_output[e->byte_index];
+                *ptr = *args->byte_output[e->byte_index];
             }
             break;
 
         case IEC_SIZE_WORD:
             if (args->int_output && args->int_output[e->byte_index]) {
-                memcpy(e->iomap_ptr, args->int_output[e->byte_index], 2);
+                memcpy(ptr, args->int_output[e->byte_index], 2);
             }
             break;
 
         case IEC_SIZE_DWORD:
             if (args->dint_output && args->dint_output[e->byte_index]) {
-                memcpy(e->iomap_ptr, args->dint_output[e->byte_index], 4);
+                memcpy(ptr, args->dint_output[e->byte_index], 4);
             }
             break;
 
         case IEC_SIZE_LWORD:
             if (args->lint_output && args->lint_output[e->byte_index]) {
-                memcpy(e->iomap_ptr, args->lint_output[e->byte_index], 8);
+                memcpy(ptr, args->lint_output[e->byte_index], 8);
             }
             break;
+        }
+    }
+}
+
+/*
+ * =============================================================================
+ * Transfer List Builder and Fast I/O Functions
+ * =============================================================================
+ */
+
+/**
+ * @brief Resolve one channel map entry into a PLC variable pointer
+ *
+ * Returns the direct pointer to the PLC variable (e.g. &__IW3) for the
+ * given channel direction and IEC size, or NULL if the slot is unmapped.
+ */
+static void *resolve_plc_ptr(const ecat_channel_map_entry_t *e,
+                              iec_dir_t direction,
+                              plugin_runtime_args_t *args)
+{
+    if (direction == IEC_DIR_INPUT) {
+        switch (e->size) {
+        case IEC_SIZE_BIT:
+            if (args->bool_input &&
+                args->bool_input[e->byte_index] &&
+                args->bool_input[e->byte_index][e->bit_index])
+                return args->bool_input[e->byte_index][e->bit_index];
+            break;
+        case IEC_SIZE_BYTE:
+            if (args->byte_input && args->byte_input[e->byte_index])
+                return args->byte_input[e->byte_index];
+            break;
+        case IEC_SIZE_WORD:
+            if (args->int_input && args->int_input[e->byte_index])
+                return args->int_input[e->byte_index];
+            break;
+        case IEC_SIZE_DWORD:
+            if (args->dint_input && args->dint_input[e->byte_index])
+                return args->dint_input[e->byte_index];
+            break;
+        case IEC_SIZE_LWORD:
+            if (args->lint_input && args->lint_input[e->byte_index])
+                return args->lint_input[e->byte_index];
+            break;
+        }
+    } else {
+        switch (e->size) {
+        case IEC_SIZE_BIT:
+            if (args->bool_output &&
+                args->bool_output[e->byte_index] &&
+                args->bool_output[e->byte_index][e->bit_index])
+                return args->bool_output[e->byte_index][e->bit_index];
+            break;
+        case IEC_SIZE_BYTE:
+            if (args->byte_output && args->byte_output[e->byte_index])
+                return args->byte_output[e->byte_index];
+            break;
+        case IEC_SIZE_WORD:
+            if (args->int_output && args->int_output[e->byte_index])
+                return args->int_output[e->byte_index];
+            break;
+        case IEC_SIZE_DWORD:
+            if (args->dint_output && args->dint_output[e->byte_index])
+                return args->dint_output[e->byte_index];
+            break;
+        case IEC_SIZE_LWORD:
+            if (args->lint_output && args->lint_output[e->byte_index])
+                return args->lint_output[e->byte_index];
+            break;
+        }
+    }
+    return NULL;
+}
+
+/** Map IEC size qualifier to byte count */
+static uint8_t iec_size_to_bytes(iec_size_t sz)
+{
+    switch (sz) {
+    case IEC_SIZE_BIT:   return 1;
+    case IEC_SIZE_BYTE:  return 1;
+    case IEC_SIZE_WORD:  return 2;
+    case IEC_SIZE_DWORD: return 4;
+    case IEC_SIZE_LWORD: return 8;
+    }
+    return 0;
+}
+
+int ecat_io_build_transfer_list(const ecat_channel_map_t *map,
+                                ecat_transfer_list_t *xfer,
+                                plugin_runtime_args_t *args,
+                                plugin_logger_t *logger)
+{
+    memset(xfer, 0, sizeof(*xfer));
+
+    int resolved = 0;
+
+    /* Resolve input channels */
+    for (int i = 0; i < map->input_count; i++) {
+        const ecat_channel_map_entry_t *e = &map->inputs[i];
+        void *plc_ptr = resolve_plc_ptr(e, IEC_DIR_INPUT, args);
+        if (!plc_ptr)
+            continue;
+
+        ecat_transfer_entry_t *t = &xfer->inputs[xfer->input_count++];
+        t->plc_ptr         = plc_ptr;
+        t->iomap_offset    = e->iomap_offset;
+        t->iomap_bit_offset = e->iomap_bit_offset;
+        t->byte_count      = iec_size_to_bytes(e->size);
+        t->is_bit          = (e->size == IEC_SIZE_BIT);
+        resolved++;
+    }
+
+    /* Resolve output channels */
+    for (int i = 0; i < map->output_count; i++) {
+        const ecat_channel_map_entry_t *e = &map->outputs[i];
+        void *plc_ptr = resolve_plc_ptr(e, IEC_DIR_OUTPUT, args);
+        if (!plc_ptr)
+            continue;
+
+        ecat_transfer_entry_t *t = &xfer->outputs[xfer->output_count++];
+        t->plc_ptr         = plc_ptr;
+        t->iomap_offset    = e->iomap_offset;
+        t->iomap_bit_offset = e->iomap_bit_offset;
+        t->byte_count      = iec_size_to_bytes(e->size);
+        t->is_bit          = (e->size == IEC_SIZE_BIT);
+        resolved++;
+    }
+
+    plugin_logger_info(logger,
+        "Transfer list built: %d inputs, %d outputs (%d resolved)",
+        xfer->input_count, xfer->output_count, resolved);
+
+    return resolved > 0 ? resolved : -1;
+}
+
+void ecat_io_read_inputs_fast(const ecat_transfer_list_t *xfer,
+                              const uint8_t *iomap_base)
+{
+    for (int i = 0; i < xfer->input_count; i++) {
+        const ecat_transfer_entry_t *e = &xfer->inputs[i];
+        if (e->is_bit) {
+            *(uint8_t *)e->plc_ptr =
+                iomap_read_bit(iomap_base + e->iomap_offset, e->iomap_bit_offset);
+        } else {
+            memcpy(e->plc_ptr, iomap_base + e->iomap_offset, e->byte_count);
+        }
+    }
+}
+
+void ecat_io_write_outputs_fast(const ecat_transfer_list_t *xfer,
+                                uint8_t *iomap_base)
+{
+    for (int i = 0; i < xfer->output_count; i++) {
+        const ecat_transfer_entry_t *e = &xfer->outputs[i];
+        if (e->is_bit) {
+            iomap_write_bit(iomap_base + e->iomap_offset, e->iomap_bit_offset,
+                            *(const uint8_t *)e->plc_ptr);
+        } else {
+            memcpy(iomap_base + e->iomap_offset, e->plc_ptr, e->byte_count);
         }
     }
 }

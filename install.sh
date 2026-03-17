@@ -187,7 +187,8 @@ install_deps_apt() {
         make \
         cmake \
         pkg-config \
-        libffi-dev
+        libffi-dev \
+        ethtool
 }
 
 # For yum-based distros (RHEL 7, CentOS 7, Amazon Linux)
@@ -493,6 +494,7 @@ build_native_plugins() {
 
     return 0
 }
+
 
 # Setup runtime directory (needed for both Linux and Docker)
 # On MSYS2, use /run/runtime which maps to the MSYS2 installation directory

@@ -8,12 +8,28 @@
  * expected configuration, and manages process data exchange with slaves.
  *
  * Plugin lifecycle:
- *   init()        -> Load config, initialize logger
- *   start_loop()  -> Initialize SOEM master, validate topology
- *   cycle_start() -> Read inputs from slaves (Phase 2)
- *   cycle_end()   -> Write outputs to slaves (Phase 2)
- *   stop_loop()   -> Transition slaves to INIT, close master
+ *   init()        -> Load config, initialize logger [state: IDLE]
+ *   start_loop()  -> Scan bus, write SDOs, map PDOs, transition to OP [state: OPERATIONAL]
+ *   cycle_start() -> Exchange process data, read inputs into PLC buffers
+ *   cycle_end()   -> (no-op, outputs written at start of next cycle)
+ *   stop_loop()   -> Close master [state: STOPPED]
  *   cleanup()     -> Free resources
+ *
+ * Architecture:
+ *   Process data exchange runs synchronously inside the PLC scan cycle
+ *   via the cycle_start() hook. The bus cycle is fully synchronized with
+ *   the PLC common_ticktime.
+ *
+ *   A background monitor thread (enabled by ECAT_ENABLE_MONITOR_THREAD)
+ *   handles slave state checking and recovery outside the scan cycle,
+ *   using a cooperative flag protocol to avoid SOEM thread-safety issues.
+ *   When the monitor needs SOEM access, the PLC thread skips one exchange
+ *   cycle (stale I/O data) rather than blocking.
+ *
+ * State machine: STOPPED -> IDLE -> SCANNING -> CONFIGURING ->
+ *                TRANSITIONING -> OPERATIONAL <-> RECOVERING -> ERROR
+ *
+ * Commands: "scan", "status", "diagnostics"
  */
 
 #ifndef ETHERCAT_PLUGIN_H
@@ -32,10 +48,12 @@ int init(void *args);
 /**
  * @brief Start the EtherCAT master
  *
- * Initializes SOEM, scans the bus, validates topology, and transitions
- * slaves to operational state.
+ * Initializes SOEM, scans the bus, validates topology, writes SDOs,
+ * maps PDOs, and transitions slaves to operational state.
+ *
+ * @return 0 on success, -1 on failure
  */
-void start_loop(void);
+int start_loop(void);
 
 /**
  * @brief Stop the EtherCAT master
@@ -52,26 +70,29 @@ void cleanup(void);
 /**
  * @brief Called at the start of each PLC scan cycle
  *
- * Phase 1: Stub (no-op)
- * Phase 2: Will read process inputs from slaves
+ * Performs synchronous EtherCAT process data exchange:
+ * writes outputs from the previous cycle, exchanges with slaves,
+ * and reads fresh inputs into PLC buffers.
  */
 void cycle_start(void);
 
 /**
  * @brief Called at the end of each PLC scan cycle
  *
- * Phase 1: Stub (no-op)
- * Phase 2: Will write process outputs to slaves
+ * No-op. Outputs are written at the start of the next cycle_start()
+ * to be sent together with the exchange that receives fresh inputs.
  */
 void cycle_end(void);
 
 /**
- * @brief Execute an async command (e.g., network scan)
+ * @brief Execute an async command
  *
- * Commands are routed from the unix socket via plugin_driver_execute_command().
- * Uses a temporary SOEM context (not the master's g_ecx_context).
+ * Supported commands:
+ *   - "scan": Scan bus for slaves (uses temporary SOEM context)
+ *   - "status": Return current master/slave status snapshot
+ *   - "diagnostics": Return detailed timing and recovery diagnostics
  *
- * @param command_json JSON string with "command" and "params" fields
+ * @param command_json JSON string with "command" and optional "params" fields
  * @param response Buffer for JSON response
  * @param response_size Size of response buffer
  * @return 0 on success, -1 on error

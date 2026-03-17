@@ -96,6 +96,47 @@ static int get_int(const cJSON *obj, const char *key, int default_val)
 }
 
 /**
+ * @brief Get a numeric value from a JSON field that may be a number or a string.
+ *
+ * Handles:
+ *   - JSON numbers  (cJSON_IsNumber)
+ *   - Decimal strings ("100", "-50")
+ *   - Hex strings    ("0xFF", "0x1A")
+ *   - Float strings  ("3.14", "-1.5e2")
+ *
+ * @return The parsed value, or default_val on missing/empty/unparseable input.
+ */
+static double get_numeric_value(const cJSON *obj, const char *key, double default_val)
+{
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
+    if (item == NULL)
+        return default_val;
+
+    if (cJSON_IsNumber(item))
+        return item->valuedouble;
+
+    if (cJSON_IsString(item) && item->valuestring != NULL && item->valuestring[0] != '\0') {
+        const char *str = item->valuestring;
+        char *endptr = NULL;
+
+        /* Check for hex prefix */
+        if (str[0] == '0' && (str[1] == 'x' || str[1] == 'X')) {
+            long long hex_val = strtoll(str, &endptr, 16);
+            if (endptr != str && *endptr == '\0')
+                return (double)hex_val;
+            return default_val;
+        }
+
+        /* Try parsing as double (covers integers, floats, negative, scientific) */
+        double dval = strtod(str, &endptr);
+        if (endptr != str && *endptr == '\0')
+            return dval;
+    }
+
+    return default_val;
+}
+
+/**
  * @brief Get boolean value from JSON object
  */
 static bool get_bool(const cJSON *obj, const char *key, bool default_val)
@@ -308,8 +349,9 @@ static int parse_sdo(const cJSON *sdo_json, ecat_sdo_config_t *sdo)
 
     safe_strcpy(sdo->index, get_string(sdo_json, "index", "0x0000"), sizeof(sdo->index));
     sdo->subindex = (uint8_t)get_int(sdo_json, "subindex", 0);
-    sdo->value = (int32_t)get_int(sdo_json, "value", 0);
+    sdo->value = get_numeric_value(sdo_json, "value", 0.0);
     safe_strcpy(sdo->data_type, get_string(sdo_json, "data_type", ""), sizeof(sdo->data_type));
+    sdo->parsed_type = ecat_parse_data_type(sdo->data_type);
     safe_strcpy(sdo->name, get_string(sdo_json, "name", ""), sizeof(sdo->name));
 
     return ECAT_CONFIG_OK;
@@ -561,4 +603,45 @@ int ecat_config_validate(const ecat_config_t *config)
     }
 
     return ECAT_CONFIG_OK;
+}
+
+/*
+ * =============================================================================
+ * State Machine and Data Type Helpers
+ * =============================================================================
+ */
+
+const char *ecat_state_to_string(ecat_plugin_state_t state)
+{
+    switch (state) {
+    case ECAT_STATE_IDLE:          return "IDLE";
+    case ECAT_STATE_SCANNING:      return "SCANNING";
+    case ECAT_STATE_CONFIGURING:   return "CONFIGURING";
+    case ECAT_STATE_TRANSITIONING: return "TRANSITIONING";
+    case ECAT_STATE_OPERATIONAL:   return "OPERATIONAL";
+    case ECAT_STATE_RECOVERING:    return "RECOVERING";
+    case ECAT_STATE_ERROR:         return "ERROR";
+    case ECAT_STATE_STOPPED:       return "STOPPED";
+    }
+    return "UNKNOWN";
+}
+
+int ecat_data_type_size(ecat_data_type_t dt)
+{
+    switch (dt) {
+    case ECAT_DTYPE_BOOL:    return 1;
+    case ECAT_DTYPE_INT8:    return 1;
+    case ECAT_DTYPE_UINT8:   return 1;
+    case ECAT_DTYPE_INT16:   return 2;
+    case ECAT_DTYPE_UINT16:  return 2;
+    case ECAT_DTYPE_INT32:   return 4;
+    case ECAT_DTYPE_UINT32:  return 4;
+    case ECAT_DTYPE_INT64:   return 8;
+    case ECAT_DTYPE_UINT64:  return 8;
+    case ECAT_DTYPE_REAL32:  return 4;
+    case ECAT_DTYPE_REAL64:  return 8;
+    case ECAT_DTYPE_UNKNOWN: return 0;
+    case ECAT_DTYPE_PAD:     return 0;
+    }
+    return 0;
 }

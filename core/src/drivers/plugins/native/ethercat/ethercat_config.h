@@ -88,11 +88,12 @@ typedef struct {
  * to a slave during configuration phase.
  */
 typedef struct {
-    char     index[12];        /* hex string e.g. "0x8000" */
-    uint8_t  subindex;
-    int32_t  value;
-    char     data_type[12];
-    char     name[ECAT_MAX_NAME_LEN];
+    char             index[12];        /* hex string e.g. "0x8000" */
+    uint8_t          subindex;
+    double           value;            /* stored as double; cast to target type at write time */
+    char             data_type[12];
+    ecat_data_type_t parsed_type;      /* enum resolved from data_type string */
+    char             name[ECAT_MAX_NAME_LEN];
 } ecat_sdo_config_t;
 
 /**
@@ -216,5 +217,106 @@ void ecat_config_init_defaults(ecat_config_t *config);
  * @return Matching ecat_data_type_t, or ECAT_DTYPE_UNKNOWN if unrecognized
  */
 ecat_data_type_t ecat_parse_data_type(const char *str);
+
+/*
+ * =============================================================================
+ * Plugin State Machine
+ * =============================================================================
+ */
+
+/** Maximum number of recovery attempts before transitioning to ERROR state */
+#define ECAT_MAX_RECOVERY_ATTEMPTS  5
+
+/** Number of consecutive WKC errors before triggering recovery */
+#define ECAT_WKC_ERROR_THRESHOLD    3
+
+/**
+ * Enable the background monitor thread for slave state checking and recovery.
+ * When enabled, a low-priority thread periodically calls ecx_readstate() and
+ * attempt_recovery() outside the PLC scan cycle, preventing overruns.
+ * When disabled, no state monitoring or automatic recovery is performed
+ * at runtime (the bus runs open-loop after reaching OPERATIONAL).
+ *
+ * Define to 0 to disable, 1 to enable.
+ */
+#ifndef ECAT_ENABLE_MONITOR_THREAD
+#define ECAT_ENABLE_MONITOR_THREAD  1
+#endif
+
+/** Background monitor thread polling interval in milliseconds */
+#define ECAT_MONITOR_INTERVAL_MS    500
+
+/** Timeout in ms to wait for PLC thread to yield SOEM access */
+#define ECAT_SOEM_ACCESS_TIMEOUT_MS 200
+
+/**
+ * @brief EtherCAT plugin state machine states
+ *
+ * State transitions:
+ *   STOPPED -> IDLE -> SCANNING -> CONFIGURING -> TRANSITIONING -> OPERATIONAL
+ *   OPERATIONAL <-> RECOVERING
+ *   RECOVERING -> ERROR (after max attempts)
+ *   Any state -> STOPPED (via stop_loop)
+ */
+typedef enum {
+    ECAT_STATE_IDLE,           /* After init(), before start_loop()         */
+    ECAT_STATE_SCANNING,       /* ecx_init + ecx_config_init               */
+    ECAT_STATE_CONFIGURING,    /* SDO writes + PDO mapping                 */
+    ECAT_STATE_TRANSITIONING,  /* Slaves moving to SAFE-OP -> OP           */
+    ECAT_STATE_OPERATIONAL,    /* Normal cyclic operation                   */
+    ECAT_STATE_RECOVERING,     /* Attempting to recover slaves              */
+    ECAT_STATE_ERROR,          /* Unrecoverable error                      */
+    ECAT_STATE_STOPPED         /* After stop_loop() or before init()       */
+} ecat_plugin_state_t;
+
+/**
+ * @brief Per-slave status snapshot for monitoring
+ */
+typedef struct {
+    int      position;
+    char     name[ECAT_MAX_NAME_LEN];
+    uint16_t al_state;          /* EC_STATE_* from SOEM                    */
+    uint16_t al_status_code;
+    uint32_t error_count;
+} ecat_slave_status_t;
+
+/**
+ * @brief Master-level status snapshot for monitoring and diagnostics
+ *
+ * Updated periodically by the PLC scan cycle under g_status_mutex.
+ * Read by execute_command handlers for the "status" and "diagnostics" commands.
+ */
+typedef struct {
+    ecat_plugin_state_t plugin_state;
+    int                 slave_count;
+    ecat_slave_status_t slaves[ECAT_MAX_SLAVES];
+    uint64_t            cycle_count;
+    uint64_t            wkc_error_count;
+    uint64_t            avg_cycle_us;
+    uint64_t            max_cycle_us;
+    uint64_t            max_exchange_us;
+    int                 consecutive_wkc_errors;
+    int                 recovery_attempts;
+    int                 expected_wkc;
+    uint64_t            exchange_skips;
+} ecat_master_status_t;
+
+/**
+ * @brief Convert plugin state enum to human-readable string
+ *
+ * @param state Plugin state value
+ * @return Static string representation (e.g., "OPERATIONAL")
+ */
+const char *ecat_state_to_string(ecat_plugin_state_t state);
+
+/**
+ * @brief Get the size in bytes for a given EtherCAT data type
+ *
+ * Used for SDO write operations to determine the payload size.
+ *
+ * @param dt Data type enum value
+ * @return Size in bytes (0 for UNKNOWN/PAD, 1 for BOOL)
+ */
+int ecat_data_type_size(ecat_data_type_t dt);
 
 #endif /* ETHERCAT_CONFIG_H */

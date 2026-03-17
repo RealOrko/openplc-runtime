@@ -4,7 +4,15 @@
  *
  * Provides a high-level interface for initializing and managing the
  * EtherCAT master using the SOEM library. Handles network initialization,
- * slave scanning, topology validation, and state transitions.
+ * slave scanning, topology validation, state transitions, SDO configuration,
+ * and slave recovery.
+ *
+ * The initialization sequence is split into discrete phases to support
+ * the plugin state machine:
+ *   1. open_and_scan   - Open interface, scan bus, validate topology
+ *   2. write_sdos      - Write SDO parameters to slaves (in PRE-OP)
+ *   3. configure       - Map process data, configure Distributed Clocks
+ *   4. transition_to_op - Transition all slaves to OPERATIONAL
  */
 
 #ifndef ETHERCAT_MASTER_H
@@ -15,21 +23,59 @@
 #include "soem/soem.h"
 
 /**
- * @brief Initialize the EtherCAT master
+ * @brief Open network interface, scan bus, and validate topology
  *
- * Performs the complete initialization sequence:
- * 1. Open network interface via SOEM
- * 2. Scan the bus for slaves
- * 3. Validate topology against JSON configuration
- * 4. Map process data
- * 5. Configure Distributed Clocks
- * 6. Transition slaves to OPERATIONAL state
+ * Performs initialization steps 1-3:
+ *   1. Open network interface via SOEM
+ *   2. Scan the bus for slaves
+ *   3. Validate topology against JSON configuration
  *
  * @param config Parsed EtherCAT configuration
  * @param logger Plugin logger instance
  * @return 0 on success, -1 on failure
  */
-int ecat_master_init(const ecat_config_t *config, plugin_logger_t *logger);
+int ecat_master_open_and_scan(const ecat_config_t *config, plugin_logger_t *logger);
+
+/**
+ * @brief Write SDO parameters to a slave
+ *
+ * Writes all configured SDO entries to the specified slave using ecx_SDOwrite.
+ * Must be called while slaves are in PRE-OP state (after open_and_scan,
+ * before configure).
+ *
+ * @param slave_pos  1-based slave position on the bus
+ * @param sdos       Array of SDO configuration entries
+ * @param sdo_count  Number of SDO entries
+ * @param logger     Plugin logger instance
+ * @return Number of SDOs successfully written, or -1 on critical error
+ */
+int ecat_master_write_sdos(int slave_pos, const ecat_sdo_config_t *sdos,
+                           int sdo_count, plugin_logger_t *logger);
+
+/**
+ * @brief Map process data and configure Distributed Clocks
+ *
+ * Performs initialization steps 4-5:
+ *   4. Map process data (IOmap)
+ *   5. Configure Distributed Clocks
+ *
+ * @param config Parsed EtherCAT configuration
+ * @param logger Plugin logger instance
+ * @return 0 on success, -1 on failure
+ */
+int ecat_master_configure(const ecat_config_t *config, plugin_logger_t *logger);
+
+/**
+ * @brief Transition all slaves to OPERATIONAL state
+ *
+ * Performs initialization steps 6-7:
+ *   6. Wait for SAFE_OP state
+ *   7. Request and poll for OPERATIONAL state
+ *
+ * @param logger Plugin logger instance
+ * @return 0 on success, -1 on failure
+ */
+int ecat_master_transition_to_op(plugin_logger_t *logger);
 
 /**
  * @brief Validate bus topology against configuration
@@ -86,5 +132,67 @@ const ec_slavet *ecat_master_get_slave(int position);
  * @return 1 if operational, 0 otherwise
  */
 int ecat_master_is_operational(void);
+
+/**
+ * @brief Get the AL state of a specific slave
+ *
+ * Reads the current state from the SOEM slavelist (cached from last bus read).
+ *
+ * @param position 1-based slave position
+ * @return EC_STATE_* value, or 0 if position is invalid
+ */
+uint16_t ecat_master_get_slave_state(int position);
+
+/**
+ * @brief Request a state transition for a specific slave
+ *
+ * @param position 1-based slave position
+ * @param state    Target EC_STATE_* value
+ * @param logger   Plugin logger instance
+ * @return 0 on success, -1 on failure
+ */
+int ecat_master_request_state(int position, uint16_t state, plugin_logger_t *logger);
+
+/**
+ * @brief Attempt to recover a slave that has left OPERATIONAL state
+ *
+ * Uses the SOEM recovery pattern:
+ *   - SAFE_OP + ERROR: ACK error, then request OP
+ *   - SAFE_OP: request OP directly
+ *   - Lower states: ecx_reconfig_slave + ecx_recover_slave
+ *
+ * @param position 1-based slave position
+ * @param logger   Plugin logger instance
+ * @return 1 if recovered to OP, 0 if still recovering, -1 on error
+ */
+int ecat_master_recover_slave(int position, plugin_logger_t *logger);
+
+/**
+ * @brief Read back all slave states from the bus
+ *
+ * Calls ecx_readstate() to refresh the cached slave states.
+ */
+void ecat_master_read_states(void);
+
+/**
+ * @brief Get a pointer to the IOmap buffer base
+ *
+ * @return Pointer to the IOmap buffer, or NULL if not initialized
+ */
+uint8_t *ecat_master_get_iomap(void);
+
+/**
+ * @brief Get the total IOmap size (inputs + outputs)
+ *
+ * @return Total bytes used in the IOmap, or 0 if not initialized
+ */
+size_t ecat_master_get_iomap_size(void);
+
+/**
+ * @brief Get the number of slaves discovered on the bus
+ *
+ * @return Slave count, or 0 if not initialized
+ */
+int ecat_master_get_slave_count(void);
 
 #endif /* ETHERCAT_MASTER_H */

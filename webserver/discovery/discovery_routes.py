@@ -277,6 +277,133 @@ def ethercat_scan():
     )
 
 
+@discovery_bp.route("/ethercat/runtime-status", methods=["GET"])
+@jwt_required()
+def ethercat_runtime_status():
+    """
+    Get the current EtherCAT runtime status from the native plugin.
+    ---
+    tags:
+      - EtherCAT
+    security:
+      - BearerAuth: []
+    responses:
+      200:
+        description: Runtime status retrieved successfully
+        schema:
+          type: object
+          properties:
+            plugin_state:
+              type: string
+              enum:
+                - IDLE
+                - SCANNING
+                - CONFIGURING
+                - TRANSITIONING
+                - OPERATIONAL
+                - RECOVERING
+                - ERROR
+                - STOPPED
+            slave_count:
+              type: integer
+            expected_wkc:
+              type: integer
+            slaves:
+              type: array
+              items:
+                type: object
+                properties:
+                  position:
+                    type: integer
+                  name:
+                    type: string
+                  state:
+                    type: string
+                  al_status_code:
+                    type: integer
+                  error_count:
+                    type: integer
+                  has_error:
+                    type: boolean
+            metrics:
+              type: object
+              properties:
+                cycle_count:
+                  type: number
+                wkc_error_count:
+                  type: number
+                avg_cycle_us:
+                  type: number
+                max_cycle_us:
+                  type: number
+                max_exchange_us:
+                  type: number
+                consecutive_wkc_errors:
+                  type: integer
+                recovery_attempts:
+                  type: integer
+      503:
+        description: Runtime not available
+    """
+    runtime_manager = current_app.config["RUNTIME_MANAGER"]
+
+    result = runtime_manager.send_plugin_command(
+        "ethercat",
+        json.dumps({"command": "status"}),
+        timeout=5.0,
+    )
+
+    if "error" in result:
+        return jsonify({"status": "error", "message": result["error"]}), 503
+    return jsonify(result), 200
+
+
+@discovery_bp.route("/ethercat/diagnostics", methods=["GET"])
+@jwt_required()
+def ethercat_diagnostics():
+    """
+    Get detailed EtherCAT diagnostic information from the native plugin.
+    ---
+    tags:
+      - EtherCAT
+    security:
+      - BearerAuth: []
+    responses:
+      200:
+        description: Diagnostics retrieved successfully
+        schema:
+          type: object
+          properties:
+            plugin_state:
+              type: string
+            slave_count:
+              type: integer
+            slaves:
+              type: array
+              items:
+                type: object
+            timing:
+              type: object
+            recovery:
+              type: object
+            master_config:
+              type: object
+      503:
+        description: Runtime not available
+    """
+    runtime_manager = current_app.config["RUNTIME_MANAGER"]
+
+    result = runtime_manager.send_plugin_command(
+        "ethercat",
+        json.dumps({"command": "diagnostics"}),
+        timeout=5.0,
+    )
+
+    if "error" in result:
+        return jsonify({"status": "error", "message": result["error"]}), 503
+    return jsonify(result), 200
+
+
 @discovery_bp.route("/ethercat/validate", methods=["POST"])
 @jwt_required()
 def ethercat_validate():
