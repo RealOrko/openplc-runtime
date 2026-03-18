@@ -188,7 +188,8 @@ install_deps_apt() {
         cmake \
         pkg-config \
         libffi-dev \
-        ethtool
+        ethtool \
+        git
 }
 
 # For yum-based distros (RHEL 7, CentOS 7, Amazon Linux)
