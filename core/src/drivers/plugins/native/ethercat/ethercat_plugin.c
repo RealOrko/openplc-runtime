@@ -149,8 +149,8 @@ static pthread_mutex_t g_status_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Diagnostics (updated by cycle_start in the PLC thread) */
 static ecat_cycle_diag_t g_diag;
-static int g_consecutive_wkc_errors = 0;
-static int g_recovery_attempts = 0;
+static _Atomic(int) g_consecutive_wkc_errors = 0;
+static _Atomic(int) g_recovery_attempts = 0;
 static uint64_t g_cycle_counter = 0;
 
 #if ECAT_ENABLE_MONITOR_THREAD
@@ -305,11 +305,30 @@ static int attempt_recovery(void)
  * The PLC thread checks this flag at the top of cycle_start() and, when set,
  * skips the SOEM exchange and signals g_soem_paused.
  *
+ * The paused flag is cleared before requesting to prevent a stale
+ * acknowledgment from a previous release/request window from being
+ * misinterpreted as a fresh yield. Without this, the following race
+ * can occur:
+ *
+ *   1. release_soem_access() stores pause_requested=false
+ *   2. PLC cycle_start() sees the (not-yet-cleared) pause_requested=true,
+ *      sets paused=true, and skips the exchange
+ *   3. release_soem_access() stores paused=false -- but step 2 already
+ *      overwrote it back to true
+ *   4. On the next monitor interval, request_soem_access() sees the
+ *      stale paused=true and returns immediately, even though the PLC
+ *      thread is actively using SOEM
+ *
+ * Clearing paused first ensures we only succeed when the PLC thread
+ * acknowledges *this* specific request.
+ *
  * @param timeout_ms Maximum time to wait for PLC thread acknowledgment
  * @return true if SOEM access was granted, false on timeout
  */
 static bool request_soem_access(int timeout_ms)
 {
+    /* Clear any stale acknowledgment before raising a new request */
+    atomic_store(&g_soem_paused, false);
     atomic_store(&g_soem_pause_requested, true);
 
     struct timespec ts = { 0, 1000000 }; /* 1 ms poll interval */
@@ -328,11 +347,16 @@ static bool request_soem_access(int timeout_ms)
 
 /**
  * @brief Release exclusive SOEM access, allowing PLC thread to resume exchange
+ *
+ * The request flag is cleared first so that the PLC thread stops yielding
+ * before the acknowledgment flag is reset.  This prevents a PLC cycle
+ * that lands between the two stores from re-setting paused=true (which
+ * would leave a stale acknowledgment for the next request_soem_access).
  */
 static void release_soem_access(void)
 {
-    atomic_store(&g_soem_paused, false);
     atomic_store(&g_soem_pause_requested, false);
+    atomic_store(&g_soem_paused, false);
 }
 
 /*
