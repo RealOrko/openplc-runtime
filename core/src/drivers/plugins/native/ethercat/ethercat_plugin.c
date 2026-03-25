@@ -538,7 +538,8 @@ int start_loop(void)
         const ecat_slave_t *slave = &g_config.slaves[i];
         if (slave->sdo_count > 0) {
             ecat_master_write_sdos(slave->position, slave->sdo_configs,
-                                   slave->sdo_count, &g_logger);
+                                   slave->sdo_count,
+                                   slave->timeouts.sdo_timeout_ms, &g_logger);
         }
     }
 
@@ -570,7 +571,7 @@ int start_loop(void)
     atomic_store(&g_plugin_state, ECAT_STATE_TRANSITIONING);
     plugin_logger_info(&g_logger, "[state: TRANSITIONING] Moving slaves to OPERATIONAL...");
 
-    if (ecat_master_transition_to_op(&g_logger) != 0) {
+    if (ecat_master_transition_to_op(&g_config, &g_logger) != 0) {
         plugin_logger_error(&g_logger, "Failed to reach OPERATIONAL state");
         ecat_master_close(&g_logger);
         atomic_store(&g_plugin_state, ECAT_STATE_ERROR);

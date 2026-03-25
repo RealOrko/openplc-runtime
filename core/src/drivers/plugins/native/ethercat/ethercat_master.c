@@ -489,22 +489,36 @@ int ecat_master_validate_topology(const ecat_config_t *config, plugin_logger_t *
 
         ec_slavet *found = &g_ecx_context.slavelist[pos];
 
-        if (found->eep_man != expected->vendor_id) {
-            plugin_logger_error(logger,
-                "Slave %d (%s) at position %d: vendor_id mismatch - "
-                "expected 0x%08X, found 0x%08X",
-                i, expected->name, pos,
-                expected->vendor_id, found->eep_man);
-            return -1;
+        /* Vendor ID check (can be disabled per slave via startup_checks) */
+        if (expected->startup_checks.check_vendor_id) {
+            if (found->eep_man != expected->vendor_id) {
+                plugin_logger_error(logger,
+                    "Slave %d (%s) at position %d: vendor_id mismatch - "
+                    "expected 0x%08X, found 0x%08X",
+                    i, expected->name, pos,
+                    expected->vendor_id, found->eep_man);
+                return -1;
+            }
+        } else {
+            plugin_logger_debug(logger,
+                "Slave %d (%s) at position %d: vendor_id check disabled",
+                i, expected->name, pos);
         }
 
-        if (found->eep_id != expected->product_code) {
-            plugin_logger_error(logger,
-                "Slave %d (%s) at position %d: product_code mismatch - "
-                "expected 0x%08X, found 0x%08X",
-                i, expected->name, pos,
-                expected->product_code, found->eep_id);
-            return -1;
+        /* Product code check (can be disabled per slave via startup_checks) */
+        if (expected->startup_checks.check_product_code) {
+            if (found->eep_id != expected->product_code) {
+                plugin_logger_error(logger,
+                    "Slave %d (%s) at position %d: product_code mismatch - "
+                    "expected 0x%08X, found 0x%08X",
+                    i, expected->name, pos,
+                    expected->product_code, found->eep_id);
+                return -1;
+            }
+        } else {
+            plugin_logger_debug(logger,
+                "Slave %d (%s) at position %d: product_code check disabled",
+                i, expected->name, pos);
         }
 
         plugin_logger_debug(logger,
@@ -658,10 +672,22 @@ int ecat_master_open_and_scan(const ecat_config_t *config, plugin_logger_t *logg
     /* Step 4: Wait for all slaves to reach PRE-OP state.
      * ecx_config_init() requests PRE-OP but does not wait for the
      * transition to complete. Slaves need to be in PRE-OP before
-     * mailbox communication (SDO writes) can work. */
+     * mailbox communication (SDO writes) can work.
+     *
+     * Use the maximum init_to_preop_timeout across all configured slaves. */
     plugin_logger_info(logger, "Waiting for slaves to reach PRE-OP state...");
 
-    ecx_statecheck(&g_ecx_context, 0, EC_STATE_PRE_OP, EC_TIMEOUTSTATE * 4);
+    int max_preop_timeout_us = 0;
+    for (int i = 0; i < config->slave_count; i++) {
+        int t_us = config->slaves[i].timeouts.init_to_preop_timeout_ms * 1000;
+        if (t_us > max_preop_timeout_us)
+            max_preop_timeout_us = t_us;
+    }
+    if (max_preop_timeout_us == 0)
+        max_preop_timeout_us = EC_TIMEOUTSTATE * 4;
+    plugin_logger_debug(logger, "Using INIT->PRE-OP timeout: %d us", max_preop_timeout_us);
+
+    ecx_statecheck(&g_ecx_context, 0, EC_STATE_PRE_OP, max_preop_timeout_us);
     ecx_readstate(&g_ecx_context);
 
     int all_preop = 1;
@@ -694,7 +720,8 @@ int ecat_master_open_and_scan(const ecat_config_t *config, plugin_logger_t *logg
  */
 
 int ecat_master_write_sdos(int slave_pos, const ecat_sdo_config_t *sdos,
-                           int sdo_count, plugin_logger_t *logger)
+                           int sdo_count, int sdo_timeout_ms,
+                           plugin_logger_t *logger)
 {
     if (!g_soem_initialized) {
         plugin_logger_error(logger, "Cannot write SDOs: SOEM not initialized");
@@ -758,9 +785,12 @@ int ecat_master_write_sdos(int slave_pos, const ecat_sdo_config_t *sdos,
                 sdo->data_type, size);
         }
 
+        /* Use per-slave SDO timeout if configured, otherwise SOEM default */
+        int sdo_timeout_us = (sdo_timeout_ms > 0) ? (sdo_timeout_ms * 1000) : EC_TIMEOUTRXM;
+
         int wkc = ecx_SDOwrite(&g_ecx_context, (uint16)slave_pos,
                                 index, sdo->subindex,
-                                FALSE, size, value_buf, EC_TIMEOUTRXM);
+                                FALSE, size, value_buf, sdo_timeout_us);
 
         if (wkc <= 0) {
             plugin_logger_warn(logger,
@@ -784,6 +814,178 @@ int ecat_master_write_sdos(int slave_pos, const ecat_sdo_config_t *sdos,
  * Phase 3: Process Data Mapping + Distributed Clocks
  * =============================================================================
  */
+
+/**
+ * @brief Configure watchdog timers for a single slave via register writes.
+ *
+ * EtherCAT watchdog registers (addressed by configured address):
+ *   0x0400 (2 bytes) - Watchdog divider (default 0x09C2 = 2498)
+ *   0x0402 (2 bytes) - PDI watchdog time (in watchdog divider ticks)
+ *   0x0420 (2 bytes) - SM watchdog time  (in watchdog divider ticks)
+ *
+ * Default divider 0x09C2 = 2498 -> (2498+2)*25ns = 62.5us per tick.
+ * To set watchdog to X ms: ticks = X * 1000 / 62.5 = X * 16
+ *
+ * @param slave_pos 1-based slave position on the bus
+ * @param wd        Watchdog configuration
+ * @param logger    Plugin logger instance
+ */
+static void ecat_master_configure_watchdog(int slave_pos, const ecat_watchdog_t *wd,
+                                           plugin_logger_t *logger)
+{
+    /* Maximum watchdog timeout in ms that fits in a uint16_t register
+     * with the default divider (1 tick = 62.5 us -> ticks = ms * 16).
+     * 65535 / 16 = 4095.9 ms */
+    const int max_watchdog_ms = UINT16_MAX / 16;
+
+    uint16_t configadr = g_ecx_context.slavelist[slave_pos].configadr;
+    int wkc;
+
+    /* SM watchdog register 0x0420 - only write if explicitly enabled. */
+    if (wd->sm_watchdog_enabled) {
+        uint16_t sm_wd_ticks = 0;
+        if (wd->sm_watchdog_ms > 0) {
+            int clamped_ms = wd->sm_watchdog_ms;
+            if (clamped_ms > max_watchdog_ms) {
+                plugin_logger_warn(logger,
+                    "Slave %d: SM watchdog %d ms exceeds max %d ms, clamping",
+                    slave_pos, wd->sm_watchdog_ms, max_watchdog_ms);
+                clamped_ms = max_watchdog_ms;
+            }
+            sm_wd_ticks = (uint16_t)(clamped_ms * 16);
+        }
+        wkc = ecx_FPWR(&g_ecx_context.port, configadr, 0x0420,
+                            sizeof(sm_wd_ticks), &sm_wd_ticks, EC_TIMEOUTRET);
+        if (wkc <= 0) {
+            plugin_logger_warn(logger,
+                "Slave %d: failed to write SM watchdog register 0x0420 (wkc=%d)",
+                slave_pos, wkc);
+        } else {
+            plugin_logger_debug(logger,
+                "Slave %d: SM watchdog enabled (ticks=%u, ~%d ms)",
+                slave_pos, sm_wd_ticks, wd->sm_watchdog_ms);
+        }
+    } else {
+        plugin_logger_debug(logger,
+            "Slave %d: SM watchdog disabled, skipping register write",
+            slave_pos);
+    }
+
+    /* PDI watchdog register 0x0402 - only write if explicitly enabled,
+     * as many slaves do not support PDI watchdog and return wkc=0. */
+    if (wd->pdi_watchdog_enabled) {
+        uint16_t pdi_wd_ticks = 0;
+        if (wd->pdi_watchdog_ms > 0) {
+            int clamped_ms = wd->pdi_watchdog_ms;
+            if (clamped_ms > max_watchdog_ms) {
+                plugin_logger_warn(logger,
+                    "Slave %d: PDI watchdog %d ms exceeds max %d ms, clamping",
+                    slave_pos, wd->pdi_watchdog_ms, max_watchdog_ms);
+                clamped_ms = max_watchdog_ms;
+            }
+            pdi_wd_ticks = (uint16_t)(clamped_ms * 16);
+        }
+        wkc = ecx_FPWR(&g_ecx_context.port, configadr, 0x0402,
+                        sizeof(pdi_wd_ticks), &pdi_wd_ticks, EC_TIMEOUTRET);
+        if (wkc <= 0) {
+            plugin_logger_warn(logger,
+                "Slave %d: failed to write PDI watchdog register 0x0402 (wkc=%d)",
+                slave_pos, wkc);
+        } else {
+            plugin_logger_debug(logger,
+                "Slave %d: PDI watchdog enabled (ticks=%u, ~%d ms)",
+                slave_pos, pdi_wd_ticks, wd->pdi_watchdog_ms);
+        }
+    } else {
+        plugin_logger_debug(logger,
+            "Slave %d: PDI watchdog disabled, skipping register write",
+            slave_pos);
+    }
+}
+
+/**
+ * @brief Configure Distributed Clocks per slave based on JSON configuration.
+ *
+ * First calls ecx_configdc() to discover DC-capable slaves and measure
+ * propagation delays.  Then for each slave with dc.enabled, configures
+ * SYNC0 and/or SYNC1 signals.
+ *
+ * @param config Parsed EtherCAT configuration
+ * @param logger Plugin logger instance
+ */
+static void ecat_master_configure_dc(const ecat_config_t *config, plugin_logger_t *logger)
+{
+    /* Step 1: Let SOEM discover DC-capable slaves and measure delays */
+    plugin_logger_info(logger, "Configuring Distributed Clocks...");
+    ecx_configdc(&g_ecx_context);
+
+    /* Step 2: Apply per-slave DC configuration */
+    for (int i = 0; i < config->slave_count; i++) {
+        const ecat_slave_t *slave = &config->slaves[i];
+        int pos = slave->position;
+
+        if (!slave->dc.enabled)
+            continue;
+
+        if (pos < 1 || pos > g_ecx_context.slavecount) {
+            plugin_logger_warn(logger,
+                "Slave %d (%s): DC config skipped - position out of range",
+                pos, slave->name);
+            continue;
+        }
+
+        if (!g_ecx_context.slavelist[pos].hasdc) {
+            plugin_logger_warn(logger,
+                "Slave %d (%s): DC config requested but slave has no DC support",
+                pos, slave->name);
+            continue;
+        }
+
+        /* Determine cycle time: use slave-specific or fall back to master cycle */
+        uint32_t cycle_ns;
+        if (slave->dc.sync_unit_cycle_us > 0) {
+            cycle_ns = (uint32_t)(slave->dc.sync_unit_cycle_us * 1000);
+        } else {
+            cycle_ns = (uint32_t)(config->master.cycle_time_us * 1000);
+        }
+
+        if (slave->dc.sync0_enabled && slave->dc.sync1_enabled) {
+            /* Both SYNC0 and SYNC1 */
+            uint32_t cycle0_ns = (slave->dc.sync0_cycle_us > 0)
+                ? (uint32_t)(slave->dc.sync0_cycle_us * 1000) : cycle_ns;
+            uint32_t cycle1_ns = (slave->dc.sync1_cycle_us > 0)
+                ? (uint32_t)(slave->dc.sync1_cycle_us * 1000) : cycle_ns;
+            int32_t shift_ns = (int32_t)(slave->dc.sync0_shift_us * 1000);
+
+            ecx_dcsync01(&g_ecx_context, (uint16)pos, TRUE,
+                         cycle0_ns, cycle1_ns, shift_ns);
+
+            plugin_logger_info(logger,
+                "Slave %d (%s): DC SYNC0+SYNC1 enabled "
+                "(cycle0=%u ns, cycle1=%u ns, shift=%d ns)",
+                pos, slave->name, cycle0_ns, cycle1_ns, shift_ns);
+
+        } else if (slave->dc.sync0_enabled) {
+            /* SYNC0 only */
+            uint32_t sync0_ns = (slave->dc.sync0_cycle_us > 0)
+                ? (uint32_t)(slave->dc.sync0_cycle_us * 1000) : cycle_ns;
+            int32_t shift_ns = (int32_t)(slave->dc.sync0_shift_us * 1000);
+
+            ecx_dcsync0(&g_ecx_context, (uint16)pos, TRUE,
+                        sync0_ns, shift_ns);
+
+            plugin_logger_info(logger,
+                "Slave %d (%s): DC SYNC0 enabled (cycle=%u ns, shift=%d ns)",
+                pos, slave->name, sync0_ns, shift_ns);
+
+        } else {
+            /* DC enabled but no SYNC signals - just log it */
+            plugin_logger_debug(logger,
+                "Slave %d (%s): DC enabled but no SYNC signals configured",
+                pos, slave->name);
+        }
+    }
+}
 
 int ecat_master_configure(const ecat_config_t *config, plugin_logger_t *logger)
 {
@@ -812,9 +1014,18 @@ int ecat_master_configure(const ecat_config_t *config, plugin_logger_t *logger)
     plugin_logger_info(logger, "IO map: %d output bytes, %d input bytes, %d segments",
                        grp->Obytes, grp->Ibytes, grp->nsegments);
 
-    /* Step 5: Configure Distributed Clocks */
-    plugin_logger_info(logger, "Configuring Distributed Clocks...");
-    ecx_configdc(&g_ecx_context);
+    /* Step 5: Configure watchdogs per slave */
+    plugin_logger_info(logger, "Configuring per-slave watchdogs...");
+    for (int i = 0; i < config->slave_count; i++) {
+        const ecat_slave_t *slave = &config->slaves[i];
+        int pos = slave->position;
+        if (pos >= 1 && pos <= g_ecx_context.slavecount) {
+            ecat_master_configure_watchdog(pos, &slave->watchdog, logger);
+        }
+    }
+
+    /* Step 6: Configure Distributed Clocks per slave */
+    ecat_master_configure_dc(config, logger);
 
     return 0;
 }
@@ -825,17 +1036,30 @@ int ecat_master_configure(const ecat_config_t *config, plugin_logger_t *logger)
  * =============================================================================
  */
 
-int ecat_master_transition_to_op(plugin_logger_t *logger)
+int ecat_master_transition_to_op(const ecat_config_t *config, plugin_logger_t *logger)
 {
     if (!g_soem_initialized) {
         plugin_logger_error(logger, "Cannot transition: SOEM not initialized");
         return -1;
     }
 
+    /* Compute maximum SAFE-OP->OP timeout across all configured slaves */
+    int max_safeop_timeout_us = 0;
+    if (config != NULL) {
+        for (int i = 0; i < config->slave_count; i++) {
+            int t_us = config->slaves[i].timeouts.safeop_to_op_timeout_ms * 1000;
+            if (t_us > max_safeop_timeout_us)
+                max_safeop_timeout_us = t_us;
+        }
+    }
+    if (max_safeop_timeout_us == 0)
+        max_safeop_timeout_us = EC_TIMEOUTSTATE * 4;
+
     /* Step 6: Wait for SAFE_OP after config */
     plugin_logger_info(logger, "Waiting for SAFE_OP state...");
+    plugin_logger_debug(logger, "Using SAFE-OP->OP timeout: %d us", max_safeop_timeout_us);
 
-    ecx_statecheck(&g_ecx_context, 0, EC_STATE_SAFE_OP, EC_TIMEOUTSTATE * 4);
+    ecx_statecheck(&g_ecx_context, 0, EC_STATE_SAFE_OP, max_safeop_timeout_us);
 
     /* Read back actual states */
     ecx_readstate(&g_ecx_context);
@@ -872,11 +1096,14 @@ int ecat_master_transition_to_op(plugin_logger_t *logger)
 
     /* Poll for OP state with process data exchange between checks */
     int op_reached = 0;
+    int poll_timeout_us = max_safeop_timeout_us / ECAT_OP_POLL_RETRIES;
+    if (poll_timeout_us < EC_TIMEOUTRET)
+        poll_timeout_us = EC_TIMEOUTRET;
+
     for (int retry = 0; retry < ECAT_OP_POLL_RETRIES; retry++) {
         ecx_send_processdata(&g_ecx_context);
         ecx_receive_processdata(&g_ecx_context, EC_TIMEOUTRET);
-        ecx_statecheck(&g_ecx_context, 0, EC_STATE_OPERATIONAL,
-                        EC_TIMEOUTSTATE / ECAT_OP_POLL_RETRIES);
+        ecx_statecheck(&g_ecx_context, 0, EC_STATE_OPERATIONAL, poll_timeout_us);
 
         if (g_ecx_context.slavelist[0].state == EC_STATE_OPERATIONAL) {
             op_reached = 1;

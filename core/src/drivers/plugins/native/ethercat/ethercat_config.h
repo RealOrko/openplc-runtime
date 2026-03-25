@@ -114,10 +114,70 @@ typedef struct {
 } ecat_channel_t;
 
 /**
+ * @brief Per-slave startup checks
+ *
+ * Controls which identity fields are validated against the SOEM slave list
+ * during topology verification.
+ */
+typedef struct {
+    bool     check_vendor_id;
+    bool     check_product_code;
+} ecat_startup_checks_t;
+
+/**
+ * @brief Per-slave addressing
+ *
+ * Controls slave addressing on the bus.
+ */
+typedef struct {
+    uint16_t ethercat_address;    /* 0 = auto-assign */
+} ecat_addressing_t;
+
+/**
+ * @brief Per-slave timeouts
+ *
+ * Configurable timeouts for SDO operations and state transitions.
+ */
+typedef struct {
+    int      sdo_timeout_ms;           /* SDO operation timeout (default: 1000) */
+    int      init_to_preop_timeout_ms; /* INIT->PRE-OP timeout (default: 3000) */
+    int      safeop_to_op_timeout_ms;  /* SAFE-OP->OP timeout (default: 10000) */
+} ecat_timeouts_t;
+
+/**
+ * @brief Per-slave watchdog configuration
+ *
+ * Controls Sync Manager and PDI watchdog behavior per slave.
+ */
+typedef struct {
+    bool     sm_watchdog_enabled;      /* Sync Manager watchdog */
+    int      sm_watchdog_ms;           /* SM watchdog timeout (default: 100) */
+    bool     pdi_watchdog_enabled;     /* PDI watchdog */
+    int      pdi_watchdog_ms;          /* PDI watchdog timeout (default: 100) */
+} ecat_watchdog_t;
+
+/**
+ * @brief Per-slave Distributed Clocks configuration
+ *
+ * Controls DC SYNC0/SYNC1 signal generation per slave.
+ */
+typedef struct {
+    bool     enabled;
+    int      sync_unit_cycle_us;       /* 0 = use master cycle */
+    bool     sync0_enabled;
+    int      sync0_cycle_us;
+    int      sync0_shift_us;
+    bool     sync1_enabled;
+    int      sync1_cycle_us;
+    int      sync1_shift_us;
+} ecat_dc_config_t;
+
+/**
  * @brief EtherCAT slave configuration
  *
  * Complete configuration for a single EtherCAT slave device,
- * including identity, channel mappings, PDOs, and SDOs.
+ * including identity, channel mappings, PDOs, SDOs, and per-slave
+ * settings for timeouts, watchdogs, and distributed clocks.
  */
 typedef struct {
     int               position;        /* ec_slave[position] in SOEM (1-based) */
@@ -134,6 +194,11 @@ typedef struct {
     int               rx_pdo_count;
     ecat_pdo_t        tx_pdos[ECAT_MAX_PDOS];
     int               tx_pdo_count;
+    ecat_startup_checks_t startup_checks;
+    ecat_addressing_t     addressing;
+    ecat_timeouts_t       timeouts;
+    ecat_watchdog_t       watchdog;
+    ecat_dc_config_t      dc;
 } ecat_slave_t;
 
 /**

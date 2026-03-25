@@ -398,6 +398,19 @@ int ecat_io_build_channel_map(const ecat_config_t *config,
                 ecat_data_type_name(pdo_data_type), ch->iec_location,
                 (iec_loc.direction == IEC_DIR_INPUT) ? "INPUT" : "OUTPUT",
                 iec_loc.byte_index, iec_loc.bit_index, iomap_offset);
+
+            if (pdo_data_type == ECAT_DTYPE_REAL32 ||
+                pdo_data_type == ECAT_DTYPE_REAL64) {
+                const char *iec_type =
+                    (pdo_data_type == ECAT_DTYPE_REAL32) ? "REAL" : "LREAL";
+                plugin_logger_info(logger,
+                    "Slave '%s' channel '%s': PDO type is %s mapped to %s. "
+                    "Declare the PLC variable as %s so the IEEE 754 bit "
+                    "pattern is interpreted correctly",
+                    cfg_slave->name, ch->name,
+                    ecat_data_type_name(pdo_data_type), ch->iec_location,
+                    iec_type);
+            }
         }
     }
 

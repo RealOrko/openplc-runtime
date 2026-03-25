@@ -43,14 +43,16 @@ int ecat_master_open_and_scan(const ecat_config_t *config, plugin_logger_t *logg
  * Must be called while slaves are in PRE-OP state (after open_and_scan,
  * before configure).
  *
- * @param slave_pos  1-based slave position on the bus
- * @param sdos       Array of SDO configuration entries
- * @param sdo_count  Number of SDO entries
- * @param logger     Plugin logger instance
+ * @param slave_pos      1-based slave position on the bus
+ * @param sdos           Array of SDO configuration entries
+ * @param sdo_count      Number of SDO entries
+ * @param sdo_timeout_ms SDO operation timeout in milliseconds (0 = SOEM default)
+ * @param logger         Plugin logger instance
  * @return Number of SDOs successfully written, or -1 on critical error
  */
 int ecat_master_write_sdos(int slave_pos, const ecat_sdo_config_t *sdos,
-                           int sdo_count, plugin_logger_t *logger);
+                           int sdo_count, int sdo_timeout_ms,
+                           plugin_logger_t *logger);
 
 /**
  * @brief Map process data and configure Distributed Clocks
@@ -72,10 +74,14 @@ int ecat_master_configure(const ecat_config_t *config, plugin_logger_t *logger);
  *   6. Wait for SAFE_OP state
  *   7. Request and poll for OPERATIONAL state
  *
+ * Uses per-slave safeop_to_op_timeout_ms from the configuration (the
+ * maximum across all slaves is applied to the broadcast statecheck).
+ *
+ * @param config Parsed EtherCAT configuration (for per-slave timeouts)
  * @param logger Plugin logger instance
  * @return 0 on success, -1 on failure
  */
-int ecat_master_transition_to_op(plugin_logger_t *logger);
+int ecat_master_transition_to_op(const ecat_config_t *config, plugin_logger_t *logger);
 
 /**
  * @brief Validate bus topology against configuration
