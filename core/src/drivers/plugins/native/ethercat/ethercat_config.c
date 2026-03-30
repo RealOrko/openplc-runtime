@@ -434,6 +434,79 @@ static int parse_slave(const cJSON *slave_json, ecat_slave_t *slave)
     parse_pdo_array(cJSON_GetObjectItemCaseSensitive(slave_json, "tx_pdos"),
                     slave->tx_pdos, &slave->tx_pdo_count);
 
+    /* Parse per-slave configuration (defaults applied if "config" is absent) */
+    slave->startup_checks.check_vendor_id = true;
+    slave->startup_checks.check_product_code = true;
+    slave->addressing.ethercat_address = 0;
+    slave->timeouts.sdo_timeout_ms = 1000;
+    slave->timeouts.init_to_preop_timeout_ms = 3000;
+    slave->timeouts.safeop_to_op_timeout_ms = 10000;
+    slave->watchdog.sm_watchdog_enabled = true;
+    slave->watchdog.sm_watchdog_ms = 100;
+    slave->watchdog.pdi_watchdog_enabled = false;
+    slave->watchdog.pdi_watchdog_ms = 100;
+    slave->dc.enabled = false;
+    slave->dc.sync_unit_cycle_us = 0;
+    slave->dc.sync0_enabled = false;
+    slave->dc.sync0_cycle_us = 0;
+    slave->dc.sync0_shift_us = 0;
+    slave->dc.sync1_enabled = false;
+    slave->dc.sync1_cycle_us = 0;
+    slave->dc.sync1_shift_us = 0;
+
+    const cJSON *cfg = cJSON_GetObjectItemCaseSensitive(slave_json, "config");
+    if (cfg != NULL && cJSON_IsObject(cfg)) {
+        /* Startup checks */
+        const cJSON *sc = cJSON_GetObjectItemCaseSensitive(cfg, "startup_checks");
+        if (sc != NULL && cJSON_IsObject(sc)) {
+            slave->startup_checks.check_vendor_id = get_bool(sc, "check_vendor_id", true);
+            slave->startup_checks.check_product_code = get_bool(sc, "check_product_code", true);
+        }
+
+        /* Addressing */
+        const cJSON *addr = cJSON_GetObjectItemCaseSensitive(cfg, "addressing");
+        if (addr != NULL && cJSON_IsObject(addr)) {
+            slave->addressing.ethercat_address = (uint16_t)get_int(addr, "ethercat_address", 0);
+        }
+
+        /* Timeouts (negative values fall back to defaults) */
+        const cJSON *to = cJSON_GetObjectItemCaseSensitive(cfg, "timeouts");
+        if (to != NULL && cJSON_IsObject(to)) {
+            int val;
+            val = get_int(to, "sdo_timeout_ms", 1000);
+            if (val > 0) slave->timeouts.sdo_timeout_ms = val;
+            val = get_int(to, "init_to_preop_timeout_ms", 3000);
+            if (val > 0) slave->timeouts.init_to_preop_timeout_ms = val;
+            val = get_int(to, "safeop_to_op_timeout_ms", 10000);
+            if (val > 0) slave->timeouts.safeop_to_op_timeout_ms = val;
+        }
+
+        /* Watchdog (negative ms values fall back to defaults) */
+        const cJSON *wd = cJSON_GetObjectItemCaseSensitive(cfg, "watchdog");
+        if (wd != NULL && cJSON_IsObject(wd)) {
+            int val;
+            slave->watchdog.sm_watchdog_enabled = get_bool(wd, "sm_watchdog_enabled", true);
+            val = get_int(wd, "sm_watchdog_ms", 100);
+            if (val > 0) slave->watchdog.sm_watchdog_ms = val;
+            slave->watchdog.pdi_watchdog_enabled = get_bool(wd, "pdi_watchdog_enabled", false);
+            val = get_int(wd, "pdi_watchdog_ms", 100);
+            if (val > 0) slave->watchdog.pdi_watchdog_ms = val;
+        }
+
+        /* Distributed Clocks */
+        const cJSON *dc = cJSON_GetObjectItemCaseSensitive(cfg, "distributed_clocks");
+        if (dc != NULL && cJSON_IsObject(dc)) {
+            slave->dc.enabled = get_bool(dc, "enabled", false);
+            slave->dc.sync_unit_cycle_us = get_int(dc, "sync_unit_cycle_us", 0);
+            slave->dc.sync0_enabled = get_bool(dc, "sync0_enabled", false);
+            slave->dc.sync0_cycle_us = get_int(dc, "sync0_cycle_us", 0);
+            slave->dc.sync0_shift_us = get_int(dc, "sync0_shift_us", 0);
+            slave->dc.sync1_enabled = get_bool(dc, "sync1_enabled", false);
+            slave->dc.sync1_cycle_us = get_int(dc, "sync1_cycle_us", 0);
+            slave->dc.sync1_shift_us = get_int(dc, "sync1_shift_us", 0);
+        }
+    }
+
     return ECAT_CONFIG_OK;
 }
 
