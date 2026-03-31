@@ -20,6 +20,7 @@
 
 #include <ctype.h>
 #include <stdatomic.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -64,7 +65,10 @@ typedef struct {
     uint64_t total_ns;            /* last full cycle total (ns)         */
     uint64_t max_exchange_ns;     /* worst-case send+receive            */
     uint64_t max_total_ns;        /* worst-case total                   */
-    uint64_t sum_total_ns;        /* running sum for average            */
+    int64_t  avg_total_ns;        /* incremental moving average (Welford) */
+    int64_t  avg_exchange_ns;     /* incremental moving average (Welford) */
+    uint64_t min_exchange_ns;     /* best-case send+receive             */
+    uint64_t min_total_ns;        /* best-case total                    */
 } ecat_cycle_diag_t;
 
 /**
@@ -212,8 +216,7 @@ static void update_status_snapshot(void)
     snap.wkc_error_count = g_diag.wkc_error_count;
     snap.max_cycle_us = g_diag.max_total_ns / 1000;
     snap.max_exchange_us = g_diag.max_exchange_ns / 1000;
-    snap.avg_cycle_us = g_diag.cycle_count > 0
-        ? (g_diag.sum_total_ns / g_diag.cycle_count) / 1000 : 0;
+    snap.avg_cycle_us = g_diag.avg_total_ns / 1000;
 
     /* Per-slave status */
     for (int i = 0; i < g_config.slave_count && i < ECAT_MAX_SLAVES; i++) {
@@ -497,6 +500,8 @@ int init(void *args)
     /* Initialize status and diagnostics */
     memset(&g_status_snapshot, 0, sizeof(g_status_snapshot));
     memset(&g_diag, 0, sizeof(g_diag));
+    g_diag.min_exchange_ns = UINT64_MAX;
+    g_diag.min_total_ns = UINT64_MAX;
 
     /* Calculate tick divisor for task-based scheduling */
     if (g_config.master.task_cycle_time_us > 0 && g_runtime_args.common_ticktime_ns > 0) {
@@ -603,6 +608,8 @@ int start_loop(void)
     g_recovery_attempts = 0;
     g_cycle_counter = 0;
     memset(&g_diag, 0, sizeof(g_diag));
+    g_diag.min_exchange_ns = UINT64_MAX;
+    g_diag.min_total_ns = UINT64_MAX;
 
     atomic_store(&g_plugin_state, ECAT_STATE_OPERATIONAL);
 
@@ -660,17 +667,15 @@ void stop_loop(void)
     /* Log final diagnostics */
     if (g_diag.cycle_count > 0 || g_diag.wkc_error_count > 0) {
         uint64_t total_cycles = g_diag.cycle_count + g_diag.wkc_error_count;
-        uint64_t avg_us = g_diag.cycle_count > 0
-            ? (g_diag.sum_total_ns / g_diag.cycle_count) / 1000 : 0;
         plugin_logger_info(&g_logger,
             "Final cycle stats: %llu total (%llu ok, %llu errors), "
-            "avg=%llu us, max_total=%llu us, max_exchange=%llu us",
+            "avg=%lld us, min=%llu us, max=%llu us",
             (unsigned long long)total_cycles,
             (unsigned long long)g_diag.cycle_count,
             (unsigned long long)g_diag.wkc_error_count,
-            (unsigned long long)avg_us,
-            (unsigned long long)(g_diag.max_total_ns / 1000),
-            (unsigned long long)(g_diag.max_exchange_ns / 1000));
+            (long long)(g_diag.avg_total_ns / 1000),
+            (unsigned long long)(g_diag.min_total_ns / 1000),
+            (unsigned long long)(g_diag.max_total_ns / 1000));
     }
 
     memset(&g_channel_map, 0, sizeof(g_channel_map));
@@ -789,27 +794,37 @@ void cycle_start(void)
         g_consecutive_wkc_errors = 0;
     }
 
-    /* 5. Update diagnostics (no SOEM calls) */
+    /* 5. Update diagnostics (no SOEM calls, Welford's incremental average) */
     g_diag.total_ns = g_diag.exchange_ns;
     g_diag.cycle_count++;
-    g_diag.sum_total_ns += g_diag.total_ns;
+
+    g_diag.avg_total_ns += ((int64_t)g_diag.total_ns - g_diag.avg_total_ns)
+                           / (int64_t)g_diag.cycle_count;
+    g_diag.avg_exchange_ns += ((int64_t)g_diag.exchange_ns - g_diag.avg_exchange_ns)
+                              / (int64_t)g_diag.cycle_count;
 
     if (g_diag.exchange_ns > g_diag.max_exchange_ns)
         g_diag.max_exchange_ns = g_diag.exchange_ns;
+    if (g_diag.exchange_ns < g_diag.min_exchange_ns)
+        g_diag.min_exchange_ns = g_diag.exchange_ns;
     if (g_diag.total_ns > g_diag.max_total_ns)
         g_diag.max_total_ns = g_diag.total_ns;
+    if (g_diag.total_ns < g_diag.min_total_ns)
+        g_diag.min_total_ns = g_diag.total_ns;
 
     /* 6. Periodic diagnostic log */
     if ((g_diag.cycle_count % ECAT_DIAG_REPORT_INTERVAL) == 0 &&
         g_diag.cycle_count > 0) {
         uint64_t total_cycles = g_diag.cycle_count + g_diag.wkc_error_count;
-        uint64_t avg_us = (g_diag.sum_total_ns / g_diag.cycle_count) / 1000;
         plugin_logger_info(&g_logger,
-            "Cycle stats (%llu total): avg=%llu us, max_total=%llu us, "
-            "max_exchange=%llu us",
+            "Cycle stats (%llu total): avg=%lld us, min=%llu us, max=%llu us, "
+            "exchange avg=%lld us, min=%llu us, max=%llu us",
             (unsigned long long)total_cycles,
-            (unsigned long long)avg_us,
+            (long long)(g_diag.avg_total_ns / 1000),
+            (unsigned long long)(g_diag.min_total_ns / 1000),
             (unsigned long long)(g_diag.max_total_ns / 1000),
+            (long long)(g_diag.avg_exchange_ns / 1000),
+            (unsigned long long)(g_diag.min_exchange_ns / 1000),
             (unsigned long long)(g_diag.max_exchange_ns / 1000));
         plugin_logger_info(&g_logger,
             "WKC errors: %llu total, %llu noframe, rate=%.1f%%",
@@ -817,14 +832,6 @@ void cycle_start(void)
             (unsigned long long)g_diag.noframe_count,
             total_cycles > 0
                 ? (g_diag.wkc_error_count * 100.0 / total_cycles) : 0.0);
-
-        /* Reset accumulators to prevent overflow on long runs */
-        g_diag.sum_total_ns = 0;
-        g_diag.cycle_count = 0;
-        g_diag.wkc_error_count = 0;
-        g_diag.noframe_count = 0;
-        g_diag.max_exchange_ns = 0;
-        g_diag.max_total_ns = 0;
     }
 }
 
