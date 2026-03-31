@@ -215,6 +215,8 @@ typedef struct {
     int              receive_timeout_us;
     int              watchdog_timeout_cycles;
     char             log_level[8];
+    char             task_name[ECAT_MAX_NAME_LEN];
+    int              task_cycle_time_us;
 } ecat_master_config_t;
 
 /**

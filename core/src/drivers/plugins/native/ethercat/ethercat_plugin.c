@@ -153,6 +153,10 @@ static _Atomic(int) g_consecutive_wkc_errors = 0;
 static _Atomic(int) g_recovery_attempts = 0;
 static uint64_t g_cycle_counter = 0;
 
+/** Tick divisor: execute I/O exchange every g_tick_divisor-th cycle.
+ *  0 or 1 = every cycle (default / backward compatible). */
+static unsigned int g_tick_divisor = 0;
+
 #if ECAT_ENABLE_MONITOR_THREAD
 /*
  * =============================================================================
@@ -494,6 +498,22 @@ int init(void *args)
     memset(&g_status_snapshot, 0, sizeof(g_status_snapshot));
     memset(&g_diag, 0, sizeof(g_diag));
 
+    /* Calculate tick divisor for task-based scheduling */
+    if (g_config.master.task_cycle_time_us > 0 && g_runtime_args.common_ticktime_ns > 0) {
+        unsigned long long task_ns = (unsigned long long)g_config.master.task_cycle_time_us * 1000ULL;
+        g_tick_divisor = (unsigned int)(task_ns / g_runtime_args.common_ticktime_ns);
+        if (g_tick_divisor == 0) g_tick_divisor = 1;
+        plugin_logger_info(&g_logger,
+            "Task scheduling: task=%s, task_cycle=%d us, base_tick=%llu ns, divisor=%u",
+            g_config.master.task_name,
+            g_config.master.task_cycle_time_us,
+            (unsigned long long)g_runtime_args.common_ticktime_ns,
+            g_tick_divisor);
+    } else {
+        g_tick_divisor = 0;
+        plugin_logger_info(&g_logger, "Task scheduling: every cycle (no task configured)");
+    }
+
     atomic_store(&g_plugin_state, ECAT_STATE_IDLE);
     plugin_logger_info(&g_logger, "EtherCAT plugin initialized [state: IDLE]");
 
@@ -702,6 +722,12 @@ void cycle_start(void)
     int state = atomic_load(&g_plugin_state);
     if (state != ECAT_STATE_OPERATIONAL && state != ECAT_STATE_RECOVERING)
         return;
+
+    /* Task-based scheduling: skip cycles that don't align with the task interval */
+    if (g_tick_divisor > 1 && (g_cycle_counter % g_tick_divisor) != 0) {
+        g_cycle_counter++;
+        return;
+    }
 
     uint8_t *iomap = ecat_master_get_iomap();
     if (!iomap)
