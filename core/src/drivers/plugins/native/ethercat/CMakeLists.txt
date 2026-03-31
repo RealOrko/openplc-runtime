@@ -66,6 +66,11 @@ target_compile_definitions(soem PUBLIC\n\
   HAVE_U_INT16_T\n\
   HAVE_U_INT32_T\n\
   HAVE_U_INT64_T\n\
+  # pcap-stdinc.h redefines snprintf to _snprintf when _MSC_VER is\n\
+  # undefined (preprocessor treats it as 0, so 0 < 1500 is true).\n\
+  # Map _snprintf back to snprintf so MinGW GCC resolves the call.\n\
+  _snprintf=snprintf\n\
+  _vsnprintf=vsnprintf\n\
 )\n\
 \n\
 foreach(target IN ITEMS\n\
@@ -174,6 +179,14 @@ target_link_libraries(ethercat_plugin PRIVATE
     soem
     ${CMAKE_DL_LIBS}
 )
+
+# On MSYS2/Cygwin, ensure plugin API symbols (init, start_loop, etc.) are
+# exported from the shared library so that dlsym() can resolve them.
+if(CMAKE_SYSTEM_NAME STREQUAL "MSYS" OR CMAKE_SYSTEM_NAME STREQUAL "CYGWIN")
+    set_target_properties(ethercat_plugin PROPERTIES
+        LINK_FLAGS "-Wl,--export-all-symbols"
+    )
+endif()
 
 # =============================================================================
 # Output Settings

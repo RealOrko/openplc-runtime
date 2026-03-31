@@ -204,8 +204,13 @@ typedef struct {
 /**
  * @brief Master configuration parameters
  */
+/** Maximum interface name length including null terminator.
+ *  Linux names fit in IFNAMSIZ (16), but Windows NPF device paths such as
+ *  \\Device\\NPF_{GUID} can reach ~55 characters. */
+#define ECAT_IFNAME_MAX 128
+
 typedef struct {
-    char             interface[32];
+    char             interface[ECAT_IFNAME_MAX];
     int              cycle_time_us;
     int              receive_timeout_us;
     int              watchdog_timeout_cycles;

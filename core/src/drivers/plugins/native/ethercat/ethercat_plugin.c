@@ -823,25 +823,22 @@ void cycle_end(void)
 /**
  * @brief Validate a network interface name for safe use in SOEM calls.
  *
- * Rejects names that are empty, too long, or contain characters outside
- * [a-zA-Z0-9_-].  Writes a JSON error to @p response on failure.
+ * Accepts Linux names (e.g. "eth0") and Windows NPF device paths
+ * (e.g. "\\Device\\NPF_{GUID}").  Writes a JSON error to @p response
+ * on failure.
  *
  * @return 0 if valid, -1 if invalid (response already filled)
  */
 static int validate_interface_name(const char *ifname, char *response, size_t response_size)
 {
     size_t ifname_len = strlen(ifname);
-    if (ifname_len == 0 || ifname_len > 15) { /* IFNAMSIZ - 1 */
+    if (ifname_len == 0 || ifname_len >= ECAT_IFNAME_MAX) {
         snprintf(response, response_size, "{\"error\":\"invalid interface name length\"}");
-        return -1;
-    }
-    if (!isalpha((unsigned char)ifname[0])) {
-        snprintf(response, response_size, "{\"error\":\"invalid interface name format\"}");
         return -1;
     }
     for (size_t i = 0; i < ifname_len; i++) {
         unsigned char c = (unsigned char)ifname[i];
-        if (!isalnum(c) && c != '_' && c != '-') {
+        if (!isalnum(c) && c != '_' && c != '-' && c != '\\' && c != '{' && c != '}' && c != '.') {
             snprintf(response, response_size, "{\"error\":\"invalid interface name format\"}");
             return -1;
         }
