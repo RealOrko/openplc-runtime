@@ -10,9 +10,9 @@ This module provides the plugin interface required by the OpenPLC runtime:
 This is a thin entry point that delegates to the modular components.
 """
 
-import sys
-import os
 import asyncio
+import os
+import sys
 import threading
 from typing import Optional
 
@@ -36,13 +36,13 @@ from shared.plugin_config_decode.opcua_config_model import OpcuaConfig
 # Import local modules (use absolute imports for runtime compatibility)
 try:
     # Try relative imports first (when loaded as package)
-    from .opcua_logging import get_logger, log_debug, log_error, log_info, log_warn
     from .config import load_config
+    from .opcua_logging import get_logger, log_debug, log_error, log_info, log_warn
     from .server import OpcuaServerManager
 except ImportError:
     # Fall back to absolute imports (when loaded directly by runtime)
-    from opcua_logging import get_logger, log_debug, log_error, log_info, log_warn
     from config import load_config
+    from opcua_logging import get_logger, log_debug, log_error, log_info, log_warn
     from server import OpcuaServerManager
 
 
@@ -53,6 +53,7 @@ _config: Optional[OpcuaConfig] = None
 _server_manager: Optional[OpcuaServerManager] = None
 _server_thread: Optional[threading.Thread] = None
 _stop_event = threading.Event()
+_loop: Optional[asyncio.AbstractEventLoop] = None
 
 
 def init(args_capsule) -> bool:
@@ -138,9 +139,7 @@ def start_loop() -> bool:
 
         # Start server in background thread
         _server_thread = threading.Thread(
-            target=_run_server_thread,
-            daemon=True,
-            name="opcua-server"
+            target=_run_server_thread, daemon=True, name="opcua-server"
         )
         _server_thread.start()
 
@@ -155,33 +154,44 @@ def start_loop() -> bool:
 def stop_loop() -> bool:
     """
     Stop the OPC UA server.
-    
-    Called when the plugin needs to be stopped.
-    
+
+    Uses a two-phase approach:
+    1. Graceful (10s): signal the stop event and wait for the async server to
+       shut down cleanly via its monitor task.
+    2. Forced (5s): if the thread is still alive, cancel all asyncio tasks on
+       the event loop and wait again.
+
     Returns:
-        True if server stopped successfully, False otherwise
+        True if the server thread stopped, False if it survived both phases.
     """
     global _server_thread
-    
+
     log_info("Stopping OPC UA server...")
-    
+
     try:
-        # Signal stop
+        # Phase 1: Graceful stop -- signal and wait
         _stop_event.set()
-        
-        # Wait for thread to finish
+
         if _server_thread and _server_thread.is_alive():
+            _server_thread.join(timeout=10.0)
+
+        if _server_thread and _server_thread.is_alive():
+            # Phase 2: Force-cancel the asyncio event loop
+            log_warn("Graceful stop timed out, forcing event loop cancellation...")
+            loop = _loop
+            if loop is not None and loop.is_running():
+                loop.call_soon_threadsafe(_cancel_all_tasks, loop)
             _server_thread.join(timeout=5.0)
-            
-            if _server_thread.is_alive():
-                log_warn("Server thread did not stop within timeout")
-            else:
-                log_debug("Server thread stopped")
-        
+
+        if _server_thread and _server_thread.is_alive():
+            log_error("OPC UA server thread did not stop after forced cancellation")
+            _server_thread = None
+            return False
+
         _server_thread = None
         log_info("OPC UA server stopped")
         return True
-        
+
     except Exception as e:
         log_error(f"Error stopping server: {e}")
         return False
@@ -190,55 +200,71 @@ def stop_loop() -> bool:
 def cleanup() -> bool:
     """
     Clean up plugin resources.
-    
+
     Called when the plugin is being unloaded.
-    
+
     Returns:
         True if cleanup successful, False otherwise
     """
     global _runtime_args, _buffer_accessor, _config, _server_manager, _server_thread
-    
+
     log_info("Cleaning up OPC UA plugin...")
-    
+
     try:
         # Stop server if running
         stop_loop()
-        
+
         # Clear references
         _runtime_args = None
         _buffer_accessor = None
         _config = None
         _server_manager = None
         _server_thread = None
-        
+
         log_info("Cleanup completed")
         return True
-        
+
     except Exception as e:
         log_error(f"Cleanup error: {e}")
         return False
 
 
+def _cancel_all_tasks(loop):
+    """Cancel all running tasks on the event loop.
+
+    Intended to be called from stop_loop() via loop.call_soon_threadsafe().
+    """
+    for task in asyncio.all_tasks(loop):
+        task.cancel()
+
+
 def _run_server_thread() -> None:
     """
     Server thread main function.
-    
-    Runs the async server in a new event loop.
+
+    Runs the async server in a new event loop and stores a reference to the
+    loop so that stop_loop() can force-cancel tasks if the graceful shutdown
+    times out.
     """
+    global _loop
+
     async def _run_with_stop_check():
         """Run server with stop event monitoring."""
+        global _loop
+        _loop = asyncio.get_running_loop()
+
         # Create stop monitoring task
         async def _monitor_stop():
             while not _stop_event.is_set():
                 await asyncio.sleep(0.1)
-            
+
             # Stop requested
             if _server_manager:
                 await _server_manager.stop()
-        
+
         # Run server and stop monitor concurrently
         monitor_task = asyncio.create_task(_monitor_stop())
-        
+
         try:
             await _server_manager.run()
         except asyncio.CancelledError:
@@ -249,13 +275,15 @@ def _run_server_thread() -> None:
                 await monitor_task
             except asyncio.CancelledError:
                 pass
-    
+
     try:
         asyncio.run(_run_with_stop_check())
     except Exception as e:
         log_error(f"Server thread error: {e}")
+    finally:
+        _loop = None
 
 
 # For backwards compatibility, also export as module-level functions
 # that match the old plugin interface
-__all__ = ['init', 'start_loop', 'stop_loop', 'cleanup']
+__all__ = ["init", "start_loop", "stop_loop", "cleanup"]
