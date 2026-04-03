@@ -461,6 +461,8 @@ int plugin_driver_stop(plugin_driver_t *driver)
         return 0;
     }
 
+    int stop_failed = 0;
+
     // Only acquire Python GIL if we have Python plugins and Python is initialized
     PyGILState_STATE local_gstate;
     int need_gil = has_python_plugin && Py_IsInitialized();
@@ -489,11 +491,21 @@ int plugin_driver_stop(plugin_driver_t *driver)
             {
                 PyErr_Print();
                 log_error("Python stop call failed for plugin: %s", plugin->config.name);
+                stop_failed = 1;
             }
             else
             {
-                log_info("Plugin %s stopped successfully", plugin->config.name);
+                int success = PyObject_IsTrue(res);
                 Py_DECREF(res);
+                if (success == 1)
+                {
+                    log_info("Plugin %s stopped successfully", plugin->config.name);
+                }
+                else
+                {
+                    log_error("Plugin %s failed to stop cleanly", plugin->config.name);
+                    stop_failed = 1;
+                }
             }
             plugin->running = 0;
         }
@@ -510,7 +522,7 @@ int plugin_driver_stop(plugin_driver_t *driver)
         PyGILState_Release(local_gstate);
     }
 
-    return 0;
+    return stop_failed ? -1 : 0;
 }
 
 void plugin_driver_destroy(plugin_driver_t *driver)

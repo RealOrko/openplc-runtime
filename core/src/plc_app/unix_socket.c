@@ -27,6 +27,52 @@ void unix_socket_set_plugin_driver(void *driver)
     g_plugin_driver = (plugin_driver_t *)driver;
 }
 
+// Flag to prevent overlapping state transitions (e.g. START while STOP is in progress).
+// Set before spawning the transition thread, cleared when the transition completes.
+static atomic_int is_transitioning = 0;
+
+static void *transition_worker(void *arg)
+{
+    PLCState target = *(PLCState *)arg;
+    free(arg);
+
+    bool result = plc_set_state(target);
+    if (!result)
+    {
+        log_error("State transition to %s failed",
+                  target == PLC_STATE_RUNNING ? "RUNNING" : "STOPPED");
+    }
+
+    atomic_store(&is_transitioning, 0);
+    return NULL;
+}
+
+// Start a background thread that performs the (potentially slow) state transition.
+// Returns true if the thread was spawned, false on error.
+static bool begin_transition(PLCState target)
+{
+    PLCState *arg = malloc(sizeof(PLCState));
+    if (!arg)
+    {
+        log_error("Failed to allocate transition argument");
+        return false;
+    }
+    *arg = target;
+
+    atomic_store(&is_transitioning, 1);
+
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, transition_worker, arg) != 0)
+    {
+        log_error("Failed to create transition thread: %s", strerror(errno));
+        free(arg);
+        atomic_store(&is_transitioning, 0);
+        return false;
+    }
+    pthread_detach(tid);
+    return true;
+}
+
 // helper: read one line terminated by '\n' from a socket
 static ssize_t read_line(int fd, char *buffer, size_t max_length)
 {
@@ -49,49 +95,78 @@ static ssize_t read_line(int fd, char *buffer, size_t max_length)
     return total_read;
 }
 
+static void format_status_response(char *response, size_t response_size)
+{
+    PLCState current_state = plc_get_state();
+
+    if (current_state == PLC_STATE_INIT)
+        strncpy(response, "STATUS:INIT\n", response_size);
+    else if (current_state == PLC_STATE_RUNNING)
+        strncpy(response, "STATUS:RUNNING\n", response_size);
+    else if (current_state == PLC_STATE_STOPPED)
+        strncpy(response, "STATUS:STOPPED\n", response_size);
+    else if (current_state == PLC_STATE_ERROR)
+        strncpy(response, "STATUS:ERROR\n", response_size);
+    else if (current_state == PLC_STATE_EMPTY)
+        strncpy(response, "STATUS:EMPTY\n", response_size);
+    else
+        strncpy(response, "STATUS:UNKNOWN\n", response_size);
+}
+
 void handle_unix_socket_commands(const char *command, char *response, size_t response_size)
 {
+    // While a state transition is in progress, only allow PING and STATUS.
+    // Everything else gets COMMAND:BUSY so commands cannot overlap.
+    if (atomic_load(&is_transitioning))
+    {
+        if (strcmp(command, "PING") == 0)
+        {
+            strncpy(response, "PING:OK\n", response_size);
+        }
+        else if (strcmp(command, "STATUS") == 0)
+        {
+            format_status_response(response, response_size);
+        }
+        else
+        {
+            strncpy(response, "COMMAND:BUSY\n", response_size);
+        }
+        response[response_size - 1] = '\0';
+        return;
+    }
+
     if (strcmp(command, "PING") == 0)
     {
         strncpy(response, "PING:OK\n", response_size);
     }
     else if (strcmp(command, "STATUS") == 0)
     {
-        PLCState current_state = plc_get_state();
-
-        if (current_state == PLC_STATE_INIT)
-            strncpy(response, "STATUS:INIT\n", response_size);
-        else if (current_state == PLC_STATE_RUNNING)
-            strncpy(response, "STATUS:RUNNING\n", response_size);
-        else if (current_state == PLC_STATE_STOPPED)
-            strncpy(response, "STATUS:STOPPED\n", response_size);
-        else if (current_state == PLC_STATE_ERROR)
-            strncpy(response, "STATUS:ERROR\n", response_size);
-        else if (current_state == PLC_STATE_EMPTY)
-            strncpy(response, "STATUS:EMPTY\n", response_size);
-        else
-            strncpy(response, "STATUS:UNKNOWN\n", response_size);
+        format_status_response(response, response_size);
     }
     else if (strcmp(command, "STOP") == 0)
     {
-        if (plc_set_state(PLC_STATE_STOPPED))
-            strncpy(response, "STOP:OK\n", response_size);
+        PLCState current_state = plc_get_state();
+        if (current_state == PLC_STATE_RUNNING)
+        {
+            if (begin_transition(PLC_STATE_STOPPED))
+                strncpy(response, "STOP:OK\n", response_size);
+            else
+                strncpy(response, "STOP:ERROR\n", response_size);
+        }
         else
+        {
             strncpy(response, "STOP:ERROR\n", response_size);
+        }
     }
     else if (strcmp(command, "START") == 0)
     {
         PLCState current_state = plc_get_state();
         if (current_state != PLC_STATE_RUNNING)
         {
-            if (plc_set_state(PLC_STATE_RUNNING))
-            {
+            if (begin_transition(PLC_STATE_RUNNING))
                 strncpy(response, "START:OK\n", response_size);
-            }
             else
-            {
                 strncpy(response, "START:ERROR\n", response_size);
-            }
         }
         else
         {
