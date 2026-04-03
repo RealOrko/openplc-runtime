@@ -13,6 +13,8 @@ on:
 
 jobs:
   build-windows-installer:
+    # Skip pre-release tags (those containing a hyphen, e.g. v4.1.0-rc.1)
+    if: ${{ !contains(github.ref_name, '-') || github.event_name == 'workflow_dispatch' }}
     runs-on: windows-latest
     permissions:
       contents: write
