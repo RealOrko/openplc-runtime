@@ -9,7 +9,7 @@ from typing import Final
 
 from webserver.runtimemanager import RuntimeManager
 from webserver.logger import get_logger, LogParser
-from webserver.plugin_config_model import PluginsConfiguration, PluginConfig
+from webserver.plugin_config_model import PluginsConfiguration, PluginConfig, PluginType
 
 logger, _ = get_logger("runtime", use_buffer=True)
 
@@ -211,6 +211,53 @@ def update_plugin_configurations(generated_dir: str = "core/generated"):
                 build_state.log(f"[INFO] {message}\n")
             else:
                 build_state.log(f"[WARNING] {message}\n")
+
+    # Handle VPP plugin registration
+    # VPP plugins are compiled from source on-target. If a compiled VPP plugin
+    # .so exists in the build directory, register it in plugins.conf.
+    build_dir = os.path.join(generated_dir, "build") if generated_dir != "core/generated" else "build"
+    vpp_plugin_dir = os.path.join(generated_dir, "vpp_plugin")
+    vpp_sos = glob.glob(os.path.join(build_dir, "lib*_plugin.so"))
+
+    if os.path.exists(vpp_plugin_dir) and vpp_sos:
+        for so_path in vpp_sos:
+            # Extract plugin name: "libsynergy_plugin.so" -> "synergy"
+            so_basename = os.path.basename(so_path)
+            plugin_name = so_basename.replace("lib", "").replace("_plugin.so", "")
+
+            # Find matching config file
+            config_path = os.path.join(conf_dir, f"{plugin_name}.json")
+            if not os.path.exists(config_path):
+                build_state.log(f"[WARNING] VPP plugin {plugin_name}: no config file found at {config_path}\n")
+                continue
+
+            if not plugins_config.has_plugin(plugin_name):
+                # First-time deployment: add new entry
+                plugins_config.add_plugin(
+                    name=plugin_name,
+                    path=so_path,
+                    enabled=True,
+                    plugin_type=PluginType.NATIVE,
+                    config_path=config_path,
+                )
+                plugins_updated += 1
+                build_state.log(f"[INFO] Registered new VPP plugin '{plugin_name}' from {so_path}\n")
+            else:
+                # Update existing entry with new paths and enable
+                plugins_config.update_plugin_path(plugin_name, so_path)
+                for p in plugins_config.plugins:
+                    if p.name == plugin_name:
+                        p.config_path = config_path
+                        if not p.enabled:
+                            p.enabled = True
+                            plugins_updated += 1
+                        break
+                build_state.log(f"[INFO] Updated VPP plugin '{plugin_name}' path to {so_path}\n")
+    elif not os.path.exists(vpp_plugin_dir):
+        # No VPP plugin in this upload — disable any previously registered VPP plugins
+        # that no longer have a matching config file (already handled by
+        # update_plugins_from_config_dir above, since their config won't be in conf/)
+        pass
 
     # Save the updated configuration
     if plugins_config.to_file(plugins_conf_path):

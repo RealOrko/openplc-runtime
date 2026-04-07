@@ -85,3 +85,50 @@ echo "[INFO] Linking shared library..."
 g++ $FLAGS -shared -o "$BUILD_PATH/new_libplc.so" "$BUILD_PATH/Config0.o" \
     "$BUILD_PATH/Res0.o" "$BUILD_PATH/debug.o" "$BUILD_PATH/glueVars.o" \
     "$BUILD_PATH/c_blocks_code.o" "$BUILD_PATH/python_loader.o" $EXTRA_OBJS -lpthread -lrt
+
+# -----------------------------------------------------------------------
+# Compile VPP plugin if source is present in the uploaded project
+# -----------------------------------------------------------------------
+VPP_PLUGIN_DIR="$ROOT/vpp_plugin"
+VPP_CHECKSUM_FILE="$VPP_PLUGIN_DIR/checksum.sha256"
+VPP_CACHED_CHECKSUM="$BUILD_PATH/vpp_plugin_checksum.sha256"
+
+if [ -d "$VPP_PLUGIN_DIR" ] && [ -f "$VPP_PLUGIN_DIR/Makefile" ]; then
+    NEEDS_COMPILE=1
+
+    # Check if plugin source has changed since last compile (checksum caching)
+    if [ -f "$VPP_CHECKSUM_FILE" ] && [ -f "$VPP_CACHED_CHECKSUM" ]; then
+        if diff -q "$VPP_CHECKSUM_FILE" "$VPP_CACHED_CHECKSUM" > /dev/null 2>&1; then
+            # Checksum matches — check if the compiled .so still exists
+            if ls "$BUILD_PATH"/lib*_plugin.so 1>/dev/null 2>&1; then
+                echo "[INFO] VPP plugin source unchanged (checksum match), skipping recompilation"
+                NEEDS_COMPILE=0
+            fi
+        fi
+    fi
+
+    if [ "$NEEDS_COMPILE" -eq 1 ]; then
+        echo "[INFO] Compiling VPP plugin from $VPP_PLUGIN_DIR..."
+        PLUGIN_INCLUDE="-I $(pwd)/core/src/drivers -I $(pwd)/core/src/drivers/plugins/native -I $(pwd)/core/src/plc_app -I $(pwd)/core/lib"
+        make -C "$VPP_PLUGIN_DIR" \
+            INCLUDE_DIRS="$PLUGIN_INCLUDE" \
+            OUTPUT_DIR="$(pwd)/$BUILD_PATH"
+
+        if [ $? -ne 0 ]; then
+            echo "[ERROR] VPP plugin compilation failed" >&2
+            exit 1
+        fi
+
+        # Cache the checksum for future builds
+        if [ -f "$VPP_CHECKSUM_FILE" ]; then
+            cp "$VPP_CHECKSUM_FILE" "$VPP_CACHED_CHECKSUM"
+        fi
+        echo "[INFO] VPP plugin compiled successfully"
+    fi
+else
+    # No VPP plugin in this upload — clean up any previously compiled VPP plugin
+    if ls "$BUILD_PATH"/lib*_plugin.so 1>/dev/null 2>&1; then
+        echo "[INFO] No VPP plugin in upload, removing previously compiled VPP plugin(s)"
+        rm -f "$BUILD_PATH"/lib*_plugin.so "$VPP_CACHED_CHECKSUM"
+    fi
+fi
