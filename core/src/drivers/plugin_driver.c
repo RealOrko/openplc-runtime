@@ -202,6 +202,17 @@ int plugin_driver_update_config(plugin_driver_t *driver, const char *config_file
         {
             has_python_plugin = 1;
         }
+
+        // Load symbols for any plugin that doesn't have them yet (e.g., newly
+        // added VPP plugins that weren't present at initial boot)
+        if (configs[w].type == PLUGIN_TYPE_NATIVE && driver->plugins[w].native_plugin == NULL)
+        {
+            if (native_plugin_get_symbols(&driver->plugins[w]) != 0)
+            {
+                log_warn("Failed to load symbols for native plugin '%s' (may not be available yet)",
+                         configs[w].name);
+            }
+        }
     }
     return 0;
 }
