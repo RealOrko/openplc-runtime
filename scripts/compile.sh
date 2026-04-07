@@ -112,7 +112,8 @@ if [ -d "$VPP_PLUGIN_DIR" ] && [ -f "$VPP_PLUGIN_DIR/Makefile" ]; then
         PLUGIN_INCLUDE="-I $(pwd)/core/src/drivers -I $(pwd)/core/src/drivers/plugins/native -I $(pwd)/core/src/plc_app -I $(pwd)/core/lib"
         make -C "$VPP_PLUGIN_DIR" \
             INCLUDE_DIRS="$PLUGIN_INCLUDE" \
-            OUTPUT_DIR="$(pwd)/$BUILD_PATH"
+            OUTPUT_DIR="$(pwd)/$BUILD_PATH" \
+            RUNTIME_ROOT="$(pwd)"
 
         if [ $? -ne 0 ]; then
             echo "[ERROR] VPP plugin compilation failed" >&2
