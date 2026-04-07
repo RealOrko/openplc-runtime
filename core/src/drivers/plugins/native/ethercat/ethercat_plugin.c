@@ -34,7 +34,7 @@
 #include "ethercat_master.h"
 #include "ethercat_io.h"
 #include "soem/soem.h"   /* osal_get_monotonic_time, ec_timet */
-#include "cjson/cJSON.h"  /* JSON parsing for execute_command */
+#include "cJSON.h"  /* JSON parsing for execute_command */
 
 /*
  * =============================================================================
