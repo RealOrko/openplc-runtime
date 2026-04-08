@@ -82,32 +82,40 @@ static pthread_mutex_t g_nic_saved_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /**
  * @brief Find saved NIC settings by interface name.
+ *
+ * Caller must hold g_nic_saved_mutex.
+ *
  * @return Pointer to the matching entry, or NULL if not found.
  */
 static nic_saved_settings_t *find_nic_saved(const char *iface)
 {
     for (int i = 0; i < g_nic_saved_count; i++) {
-        if (g_nic_saved[i].saved && strcmp(g_nic_saved[i].iface, iface) == 0)
+        if (strcmp(g_nic_saved[i].iface, iface) == 0)
             return &g_nic_saved[i];
     }
     return NULL;
 }
 
 /**
- * @brief Allocate a new NIC saved settings slot for the given interface.
+ * @brief Find or allocate a NIC saved settings slot for the given interface.
+ *
+ * Returns the existing slot if one already exists for this interface,
+ * otherwise reserves a new slot. Either way the returned slot is
+ * zero-initialized and has the interface name pre-filled.
+ *
+ * Caller must hold g_nic_saved_mutex.
+ *
  * @return Pointer to the slot, or NULL if the array is full.
  */
-static nic_saved_settings_t *alloc_nic_saved(const char *iface)
+static nic_saved_settings_t *get_nic_slot(const char *iface)
 {
-    /* Check if already exists */
-    nic_saved_settings_t *existing = find_nic_saved(iface);
-    if (existing)
-        return existing;
+    nic_saved_settings_t *slot = find_nic_saved(iface);
+    if (!slot) {
+        if (g_nic_saved_count >= ECAT_MAX_NIC_SAVED)
+            return NULL;
+        slot = &g_nic_saved[g_nic_saved_count++];
+    }
 
-    if (g_nic_saved_count >= ECAT_MAX_NIC_SAVED)
-        return NULL;
-
-    nic_saved_settings_t *slot = &g_nic_saved[g_nic_saved_count++];
     memset(slot, 0, sizeof(*slot));
     strncpy(slot->iface, iface, NIC_IFNAME_MAX - 1);
     slot->iface[NIC_IFNAME_MAX - 1] = '\0';
@@ -370,7 +378,7 @@ static nic_saved_settings_t *load_nic_settings_from_file(const char *iface, plug
 
     /* Allocate a slot and copy the loaded data */
     pthread_mutex_lock(&g_nic_saved_mutex);
-    nic_saved_settings_t *slot = alloc_nic_saved(tmp.iface);
+    nic_saved_settings_t *slot = get_nic_slot(tmp.iface);
     if (!slot) {
         pthread_mutex_unlock(&g_nic_saved_mutex);
         plugin_logger_warn(logger,
@@ -395,17 +403,13 @@ static nic_saved_settings_t *load_nic_settings_from_file(const char *iface, plug
 static void save_nic_settings(const char *iface, plugin_logger_t *logger)
 {
     pthread_mutex_lock(&g_nic_saved_mutex);
-    nic_saved_settings_t *ns = alloc_nic_saved(iface);
+    nic_saved_settings_t *ns = get_nic_slot(iface);
     if (!ns) {
         pthread_mutex_unlock(&g_nic_saved_mutex);
         plugin_logger_warn(logger,
             "%s: no free NIC saved-settings slot - skipping save", iface);
         return;
     }
-
-    memset(ns, 0, sizeof(*ns));
-    strncpy(ns->iface, iface, NIC_IFNAME_MAX - 1);
-    ns->iface[NIC_IFNAME_MAX - 1] = '\0';
     pthread_mutex_unlock(&g_nic_saved_mutex);
 
     /* Capture current NIC settings (slow shell calls -- run without lock) */
