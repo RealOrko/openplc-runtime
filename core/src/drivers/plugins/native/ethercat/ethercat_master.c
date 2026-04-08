@@ -75,9 +75,10 @@ typedef struct {
     int  offloads_saved;         /* non-zero if offload values valid       */
 } nic_saved_settings_t;
 
-#define ECAT_MAX_NIC_SAVED 4
+#define ECAT_MAX_NIC_SAVED ECAT_MAX_MASTERS
 static nic_saved_settings_t g_nic_saved[ECAT_MAX_NIC_SAVED];
 static int g_nic_saved_count = 0;
+static pthread_mutex_t g_nic_saved_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /**
  * @brief Find saved NIC settings by interface name.
@@ -368,8 +369,10 @@ static nic_saved_settings_t *load_nic_settings_from_file(const char *iface, plug
     }
 
     /* Allocate a slot and copy the loaded data */
+    pthread_mutex_lock(&g_nic_saved_mutex);
     nic_saved_settings_t *slot = alloc_nic_saved(tmp.iface);
     if (!slot) {
+        pthread_mutex_unlock(&g_nic_saved_mutex);
         plugin_logger_warn(logger,
             "No free NIC saved-settings slot for %s - discarding", tmp.iface);
         remove_nic_save_file(iface, logger);
@@ -378,6 +381,7 @@ static nic_saved_settings_t *load_nic_settings_from_file(const char *iface, plug
 
     *slot = tmp;
     slot->saved = 1;
+    pthread_mutex_unlock(&g_nic_saved_mutex);
     return slot;
 }
 
@@ -390,8 +394,10 @@ static nic_saved_settings_t *load_nic_settings_from_file(const char *iface, plug
  */
 static void save_nic_settings(const char *iface, plugin_logger_t *logger)
 {
+    pthread_mutex_lock(&g_nic_saved_mutex);
     nic_saved_settings_t *ns = alloc_nic_saved(iface);
     if (!ns) {
+        pthread_mutex_unlock(&g_nic_saved_mutex);
         plugin_logger_warn(logger,
             "%s: no free NIC saved-settings slot - skipping save", iface);
         return;
@@ -400,6 +406,13 @@ static void save_nic_settings(const char *iface, plugin_logger_t *logger)
     memset(ns, 0, sizeof(*ns));
     strncpy(ns->iface, iface, NIC_IFNAME_MAX - 1);
     ns->iface[NIC_IFNAME_MAX - 1] = '\0';
+    pthread_mutex_unlock(&g_nic_saved_mutex);
+
+    /* Capture current NIC settings (slow shell calls -- run without lock) */
+    nic_saved_settings_t local;
+    memset(&local, 0, sizeof(local));
+    strncpy(local.iface, iface, NIC_IFNAME_MAX - 1);
+    local.iface[NIC_IFNAME_MAX - 1] = '\0';
 
     char cmd[128];
     char output[2048];
@@ -408,13 +421,13 @@ static void save_nic_settings(const char *iface, plugin_logger_t *logger)
     snprintf(cmd, sizeof(cmd), "ethtool -c %s 2>/dev/null", iface);
     if (run_capture(cmd, output, sizeof(output)) == 0) {
         int ok = 0;
-        ok += (parse_ethtool_int(output, "rx-usecs", &ns->rx_usecs) == 0);
-        ok += (parse_ethtool_int(output, "tx-usecs", &ns->tx_usecs) == 0);
+        ok += (parse_ethtool_int(output, "rx-usecs", &local.rx_usecs) == 0);
+        ok += (parse_ethtool_int(output, "tx-usecs", &local.tx_usecs) == 0);
         if (ok > 0) {
-            ns->coalescing_saved = 1;
+            local.coalescing_saved = 1;
             plugin_logger_info(logger,
                 "%s: saved coalescing (rx-usecs=%d, tx-usecs=%d)",
-                iface, ns->rx_usecs, ns->tx_usecs);
+                iface, local.rx_usecs, local.tx_usecs);
         }
     }
 
@@ -422,24 +435,29 @@ static void save_nic_settings(const char *iface, plugin_logger_t *logger)
     snprintf(cmd, sizeof(cmd), "ethtool -k %s 2>/dev/null", iface);
     if (run_capture(cmd, output, sizeof(output)) == 0) {
         int ok = 0;
-        ok += (parse_ethtool_bool(output, "generic-receive-offload", &ns->gro) == 0);
-        ok += (parse_ethtool_bool(output, "generic-segmentation-offload", &ns->gso) == 0);
-        ok += (parse_ethtool_bool(output, "tcp-segmentation-offload", &ns->tso) == 0);
+        ok += (parse_ethtool_bool(output, "generic-receive-offload", &local.gro) == 0);
+        ok += (parse_ethtool_bool(output, "generic-segmentation-offload", &local.gso) == 0);
+        ok += (parse_ethtool_bool(output, "tcp-segmentation-offload", &local.tso) == 0);
         if (ok > 0) {
-            ns->offloads_saved = 1;
+            local.offloads_saved = 1;
             plugin_logger_info(logger,
                 "%s: saved offloads (gro=%s, gso=%s, tso=%s)",
                 iface,
-                ns->gro ? "on" : "off",
-                ns->gso ? "on" : "off",
-                ns->tso ? "on" : "off");
+                local.gro ? "on" : "off",
+                local.gso ? "on" : "off",
+                local.tso ? "on" : "off");
         }
     }
 
-    ns->saved = 1;
+    local.saved = 1;
+
+    /* Commit captured values back to the shared slot */
+    pthread_mutex_lock(&g_nic_saved_mutex);
+    *ns = local;
+    pthread_mutex_unlock(&g_nic_saved_mutex);
 
     /* Persist to disk so a crash does not lose the original values */
-    persist_nic_settings(ns, logger);
+    persist_nic_settings(&local, logger);
 }
 
 /**
@@ -450,41 +468,51 @@ static void save_nic_settings(const char *iface, plugin_logger_t *logger)
  */
 static void restore_nic_settings(const char *iface, plugin_logger_t *logger)
 {
-    nic_saved_settings_t *ns = find_nic_saved(iface);
-    if (!ns || !ns->saved)
-        return;
+    /* Copy saved settings to stack so ethtool runs without the lock */
+    nic_saved_settings_t local;
+    nic_saved_settings_t *ns;
 
+    pthread_mutex_lock(&g_nic_saved_mutex);
+    ns = find_nic_saved(iface);
+    if (!ns || !ns->saved) {
+        pthread_mutex_unlock(&g_nic_saved_mutex);
+        return;
+    }
+    local = *ns;
+    ns->saved = 0;
+    pthread_mutex_unlock(&g_nic_saved_mutex);
+
+    /* Restore NIC settings (slow shell calls -- run without lock) */
     char cmd[128];
 
-    if (ns->coalescing_saved) {
+    if (local.coalescing_saved) {
         snprintf(cmd, sizeof(cmd),
             "ethtool -C %s rx-usecs %d tx-usecs %d 2>/dev/null",
-            iface, ns->rx_usecs, ns->tx_usecs);
+            iface, local.rx_usecs, local.tx_usecs);
         if (system(cmd) == 0) {
             plugin_logger_info(logger,
                 "%s: restored coalescing (rx-usecs=%d, tx-usecs=%d)",
-                iface, ns->rx_usecs, ns->tx_usecs);
+                iface, local.rx_usecs, local.tx_usecs);
         }
     }
 
-    if (ns->offloads_saved) {
+    if (local.offloads_saved) {
         snprintf(cmd, sizeof(cmd),
             "ethtool -K %s gro %s gso %s tso %s 2>/dev/null",
             iface,
-            ns->gro ? "on" : "off",
-            ns->gso ? "on" : "off",
-            ns->tso ? "on" : "off");
+            local.gro ? "on" : "off",
+            local.gso ? "on" : "off",
+            local.tso ? "on" : "off");
         if (system(cmd) == 0) {
             plugin_logger_info(logger,
                 "%s: restored offloads (gro=%s, gso=%s, tso=%s)",
                 iface,
-                ns->gro ? "on" : "off",
-                ns->gso ? "on" : "off",
-                ns->tso ? "on" : "off");
+                local.gro ? "on" : "off",
+                local.gso ? "on" : "off",
+                local.tso ? "on" : "off");
         }
     }
 
-    ns->saved = 0;
     remove_nic_save_file(iface, logger);
     plugin_logger_info(logger, "%s: NIC settings restored to original values", iface);
 }
