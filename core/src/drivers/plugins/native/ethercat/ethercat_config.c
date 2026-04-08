@@ -708,8 +708,10 @@ int ecat_config_parse_all(const char *config_path,
         int result = ecat_config_validate(&instances[count].config);
         if (result == ECAT_CONFIG_OK) {
             count++;
+        } else {
+            fprintf(stderr, "ETHERCAT CONFIG: skipping entry[%d] '%s' "
+                    "(validation failed, error=%d)\n", i, name, result);
         }
-        /* Skip invalid entries with a warning (could add logging here) */
     }
 
     cJSON_Delete(root);
