@@ -599,8 +599,9 @@ static void cycle_start_single(ecat_master_instance_t *inst)
     if (state != ECAT_STATE_OPERATIONAL && state != ECAT_STATE_RECOVERING)
         return;
 
-    /* Task-based scheduling: skip cycles that don't align with the task interval */
-    if (inst->tick_divisor > 1 && (inst->cycle_counter % inst->tick_divisor) != 0) {
+    /* Task-based scheduling: skip cycles that don't align with the task interval.
+     * tick_divisor is always >= 1; when 1 the modulo is always 0 (no skip). */
+    if ((inst->cycle_counter % inst->tick_divisor) != 0) {
         inst->cycle_counter++;
         return;
     }
@@ -792,21 +793,22 @@ int init(void *args)
             return -1;
         }
 
-        /* Calculate tick divisor for task-based scheduling */
+        /* Calculate tick divisor for task-based scheduling.
+         * A divisor of 1 means "execute every cycle" (the default). */
+        inst->tick_divisor = 1;
         if (inst->config.master.task_cycle_time_us > 0 &&
             g_runtime_args.common_ticktime_ns > 0) {
             unsigned long long task_ns =
                 (unsigned long long)inst->config.master.task_cycle_time_us * 1000ULL;
-            inst->tick_divisor = (unsigned int)(task_ns / g_runtime_args.common_ticktime_ns);
-            if (inst->tick_divisor == 0) inst->tick_divisor = 1;
+            unsigned int divisor = (unsigned int)(task_ns / g_runtime_args.common_ticktime_ns);
+            if (divisor > 1)
+                inst->tick_divisor = divisor;
             plugin_logger_info(&g_logger,
                 "Master[%d] '%s': task=%s, task_cycle=%d us, base_tick=%llu ns, divisor=%u",
                 i, inst->name, inst->config.master.task_name,
                 inst->config.master.task_cycle_time_us,
                 (unsigned long long)g_runtime_args.common_ticktime_ns,
                 inst->tick_divisor);
-        } else {
-            inst->tick_divisor = 0;
         }
 
         atomic_store(&inst->plugin_state, ECAT_STATE_IDLE);
