@@ -783,6 +783,13 @@ int init(void *args)
         if (pthread_mutex_init(&inst->status_mutex, NULL) != 0) {
             plugin_logger_error(&g_logger,
                 "Master[%d] '%s': Failed to initialize status mutex", i, inst->name);
+            /* Destroy mutexes that were already initialized */
+            for (int j = 0; j < i; j++)
+                pthread_mutex_destroy(&g_masters[j].status_mutex);
+            free(g_masters);
+            g_masters = NULL;
+            g_master_count = 0;
+            return -1;
         }
 
         /* Calculate tick divisor for task-based scheduling */
