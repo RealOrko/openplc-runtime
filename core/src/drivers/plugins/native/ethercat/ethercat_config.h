@@ -20,7 +20,7 @@
 /* Maximum sizes */
 #define ECAT_MAX_MASTERS      4
 #define ECAT_MAX_SLAVES      64
-#define ECAT_IOMAP_SIZE    4096
+#define ECAT_IOMAP_SIZE    8192
 #define ECAT_MAX_CHANNELS    64
 #define ECAT_MAX_PDO_ENTRIES 32
 #define ECAT_MAX_PDOS        16
