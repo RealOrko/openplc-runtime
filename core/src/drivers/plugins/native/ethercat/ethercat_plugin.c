@@ -816,6 +816,112 @@ int init(void *args)
     return 0;
 }
 
+/*
+ * =============================================================================
+ * IEC Address Overlap Detection (multi-master)
+ * =============================================================================
+ */
+
+/**
+ * @brief Compute the byte range [start, end) occupied by a channel map entry
+ */
+static void entry_byte_range(const ecat_channel_map_entry_t *e,
+                             int *start, int *end)
+{
+    *start = e->byte_index;
+    switch (e->size) {
+    case IEC_SIZE_BIT:   *end = e->byte_index + 1; break;
+    case IEC_SIZE_BYTE:  *end = e->byte_index + 1; break;
+    case IEC_SIZE_WORD:  *end = e->byte_index + 2; break;
+    case IEC_SIZE_DWORD: *end = e->byte_index + 4; break;
+    case IEC_SIZE_LWORD: *end = e->byte_index + 8; break;
+    default:             *end = e->byte_index + 1; break;
+    }
+}
+
+/**
+ * @brief Check if two channel map entries overlap in the PLC buffer
+ *
+ * For bit-sized entries at the same byte, also checks bit_index equality.
+ */
+static bool entries_overlap(const ecat_channel_map_entry_t *a,
+                            const ecat_channel_map_entry_t *b)
+{
+    int a_start, a_end, b_start, b_end;
+    entry_byte_range(a, &a_start, &a_end);
+    entry_byte_range(b, &b_start, &b_end);
+
+    if (a_end <= b_start || b_end <= a_start)
+        return false;
+
+    if (a->size == IEC_SIZE_BIT && b->size == IEC_SIZE_BIT
+        && a->byte_index == b->byte_index) {
+        return a->bit_index == b->bit_index;
+    }
+
+    return true;
+}
+
+/**
+ * @brief Log warnings for IEC addresses mapped by more than one master
+ *
+ * Called after all masters have built their channel maps. Checks both
+ * input and output directions. Purely informational -- does not abort.
+ */
+static void warn_address_overlap(void)
+{
+    if (g_master_count < 2)
+        return;
+
+    int conflicts = 0;
+
+    for (int i = 0; i < g_master_count; i++) {
+        for (int j = i + 1; j < g_master_count; j++) {
+            /* Check inputs */
+            for (int ai = 0; ai < g_masters[i].channel_map.input_count; ai++) {
+                for (int bj = 0; bj < g_masters[j].channel_map.input_count; bj++) {
+                    if (entries_overlap(&g_masters[i].channel_map.inputs[ai],
+                                        &g_masters[j].channel_map.inputs[bj])) {
+                        const ecat_channel_map_entry_t *a =
+                            &g_masters[i].channel_map.inputs[ai];
+                        plugin_logger_warn(&g_logger,
+                            "IEC address overlap: %%I*%d.%d mapped by both "
+                            "master '%s' and master '%s'",
+                            a->byte_index,
+                            a->bit_index >= 0 ? a->bit_index : 0,
+                            g_masters[i].name, g_masters[j].name);
+                        conflicts++;
+                    }
+                }
+            }
+            /* Check outputs */
+            for (int ai = 0; ai < g_masters[i].channel_map.output_count; ai++) {
+                for (int bj = 0; bj < g_masters[j].channel_map.output_count; bj++) {
+                    if (entries_overlap(&g_masters[i].channel_map.outputs[ai],
+                                        &g_masters[j].channel_map.outputs[bj])) {
+                        const ecat_channel_map_entry_t *a =
+                            &g_masters[i].channel_map.outputs[ai];
+                        plugin_logger_warn(&g_logger,
+                            "IEC address overlap: %%Q*%d.%d mapped by both "
+                            "master '%s' and master '%s'",
+                            a->byte_index,
+                            a->bit_index >= 0 ? a->bit_index : 0,
+                            g_masters[i].name, g_masters[j].name);
+                        conflicts++;
+                    }
+                }
+            }
+        }
+    }
+
+    if (conflicts > 0) {
+        plugin_logger_warn(&g_logger,
+            "%d IEC address overlap(s) detected between masters. "
+            "The last master in cycle order will overwrite shared addresses.",
+            conflicts);
+    }
+}
+
 /**
  * @brief Start all EtherCAT masters
  *
@@ -847,6 +953,8 @@ int start_loop(void)
             "No EtherCAT masters started successfully");
         return -1;
     }
+
+    warn_address_overlap();
 
     plugin_logger_info(&g_logger, "%d/%d EtherCAT master(s) started",
                        any_started, g_master_count);
