@@ -1348,58 +1348,15 @@ static cJSON *build_master_status_json(ecat_master_instance_t *inst)
 /**
  * @brief Handle the "status" command
  *
- * Returns a snapshot of all masters' status. When there is only one master,
- * flat fields are also placed at root level for backwards compatibility.
+ * Returns a snapshot of all masters' status via the "masters" array.
  */
 static int handle_status_command(char *response, size_t response_size)
 {
     cJSON *resp = cJSON_CreateObject();
 
-    /* Always include the "masters" array */
     cJSON *masters_arr = cJSON_AddArrayToObject(resp, "masters");
     for (int i = 0; i < g_master_count; i++) {
         cJSON_AddItemToArray(masters_arr, build_master_status_json(&g_masters[i]));
-    }
-
-    /* Backwards compatibility: when only 1 master, duplicate flat fields at root */
-    if (g_master_count == 1) {
-        ecat_master_instance_t *inst = &g_masters[0];
-        ecat_master_status_t snap;
-
-        pthread_mutex_lock(&inst->status_mutex);
-        memcpy(&snap, &inst->status_snapshot, sizeof(snap));
-        pthread_mutex_unlock(&inst->status_mutex);
-
-        cJSON_AddStringToObject(resp, "plugin_state",
-                                ecat_state_to_string(snap.plugin_state));
-        cJSON_AddNumberToObject(resp, "slave_count", snap.slave_count);
-        cJSON_AddNumberToObject(resp, "expected_wkc", snap.expected_wkc);
-
-        cJSON *slaves = cJSON_AddArrayToObject(resp, "slaves");
-        for (int i = 0; i < snap.slave_count && i < ECAT_MAX_SLAVES; i++) {
-            const ecat_slave_status_t *ss = &snap.slaves[i];
-            cJSON *slave = cJSON_CreateObject();
-            cJSON_AddNumberToObject(slave, "position", ss->position);
-            cJSON_AddStringToObject(slave, "name", ss->name);
-            cJSON_AddStringToObject(slave, "state", al_state_to_string(ss->al_state));
-            cJSON_AddNumberToObject(slave, "al_status_code", ss->al_status_code);
-            cJSON_AddNumberToObject(slave, "error_count", ss->error_count);
-            cJSON_AddBoolToObject(slave, "has_error",
-                                  (ss->al_state & EC_STATE_ERROR) != 0 ||
-                                  ss->al_state != EC_STATE_OPERATIONAL);
-            cJSON_AddItemToArray(slaves, slave);
-        }
-
-        cJSON *metrics = cJSON_CreateObject();
-        cJSON_AddNumberToObject(metrics, "cycle_count", (double)snap.cycle_count);
-        cJSON_AddNumberToObject(metrics, "wkc_error_count", (double)snap.wkc_error_count);
-        cJSON_AddNumberToObject(metrics, "avg_cycle_us", (double)snap.avg_cycle_us);
-        cJSON_AddNumberToObject(metrics, "max_cycle_us", (double)snap.max_cycle_us);
-        cJSON_AddNumberToObject(metrics, "max_exchange_us", (double)snap.max_exchange_us);
-        cJSON_AddNumberToObject(metrics, "consecutive_wkc_errors", snap.consecutive_wkc_errors);
-        cJSON_AddNumberToObject(metrics, "recovery_attempts", snap.recovery_attempts);
-        cJSON_AddNumberToObject(metrics, "exchange_skips", (double)snap.exchange_skips);
-        cJSON_AddItemToObject(resp, "metrics", metrics);
     }
 
     char *json_str = cJSON_PrintUnformatted(resp);
@@ -1483,79 +1440,16 @@ static cJSON *build_master_diagnostics_json(ecat_master_instance_t *inst)
 /**
  * @brief Handle the "diagnostics" command
  *
- * Returns detailed diagnostic information for all masters. When there is
- * only one master, flat fields are also placed at root level for backwards
- * compatibility.
+ * Returns detailed diagnostic information for all masters via the "masters" array.
  */
 static int handle_diagnostics_command(char *response, size_t response_size)
 {
     cJSON *resp = cJSON_CreateObject();
 
-    /* Always include the "masters" array */
     cJSON *masters_arr = cJSON_AddArrayToObject(resp, "masters");
     for (int i = 0; i < g_master_count; i++) {
         cJSON_AddItemToArray(masters_arr,
                              build_master_diagnostics_json(&g_masters[i]));
-    }
-
-    /* Backwards compatibility: when only 1 master, duplicate flat fields at root */
-    if (g_master_count == 1) {
-        ecat_master_instance_t *inst = &g_masters[0];
-        ecat_master_status_t snap;
-
-        pthread_mutex_lock(&inst->status_mutex);
-        memcpy(&snap, &inst->status_snapshot, sizeof(snap));
-        pthread_mutex_unlock(&inst->status_mutex);
-
-        cJSON_AddStringToObject(resp, "plugin_state",
-                                ecat_state_to_string(snap.plugin_state));
-        cJSON_AddNumberToObject(resp, "slave_count", snap.slave_count);
-        cJSON_AddNumberToObject(resp, "expected_wkc", snap.expected_wkc);
-
-        cJSON *slaves = cJSON_AddArrayToObject(resp, "slaves");
-        for (int i = 0; i < snap.slave_count && i < ECAT_MAX_SLAVES; i++) {
-            const ecat_slave_status_t *ss = &snap.slaves[i];
-            cJSON *slave = cJSON_CreateObject();
-            cJSON_AddNumberToObject(slave, "position", ss->position);
-            cJSON_AddStringToObject(slave, "name", ss->name);
-            cJSON_AddStringToObject(slave, "state", al_state_to_string(ss->al_state));
-            cJSON_AddNumberToObject(slave, "al_state_raw", ss->al_state);
-            cJSON_AddNumberToObject(slave, "al_status_code", ss->al_status_code);
-            cJSON_AddNumberToObject(slave, "error_count", ss->error_count);
-            cJSON_AddBoolToObject(slave, "has_error",
-                                  (ss->al_state & EC_STATE_ERROR) != 0 ||
-                                  ss->al_state != EC_STATE_OPERATIONAL);
-            cJSON_AddItemToArray(slaves, slave);
-        }
-
-        cJSON *timing = cJSON_CreateObject();
-        cJSON_AddNumberToObject(timing, "cycle_count", (double)snap.cycle_count);
-        cJSON_AddNumberToObject(timing, "wkc_error_count", (double)snap.wkc_error_count);
-        cJSON_AddNumberToObject(timing, "avg_cycle_us", (double)snap.avg_cycle_us);
-        cJSON_AddNumberToObject(timing, "max_cycle_us", (double)snap.max_cycle_us);
-        cJSON_AddNumberToObject(timing, "max_exchange_us", (double)snap.max_exchange_us);
-        cJSON_AddNumberToObject(timing, "configured_cycle_us",
-                                inst->config.master.cycle_time_us);
-        cJSON_AddNumberToObject(timing, "receive_timeout_us", inst->receive_timeout_us);
-        cJSON_AddItemToObject(resp, "timing", timing);
-
-        cJSON *recovery = cJSON_CreateObject();
-        cJSON_AddNumberToObject(recovery, "consecutive_wkc_errors",
-                                snap.consecutive_wkc_errors);
-        cJSON_AddNumberToObject(recovery, "recovery_attempts", snap.recovery_attempts);
-        cJSON_AddNumberToObject(recovery, "max_recovery_attempts",
-                                ECAT_MAX_RECOVERY_ATTEMPTS);
-        cJSON_AddNumberToObject(recovery, "wkc_error_threshold", ECAT_WKC_ERROR_THRESHOLD);
-        cJSON_AddNumberToObject(recovery, "exchange_skips", (double)snap.exchange_skips);
-        cJSON_AddItemToObject(resp, "recovery", recovery);
-
-        cJSON *master_cfg = cJSON_CreateObject();
-        cJSON_AddStringToObject(master_cfg, "interface", inst->config.master.interface);
-        cJSON_AddNumberToObject(master_cfg, "cycle_time_us",
-                                inst->config.master.cycle_time_us);
-        cJSON_AddNumberToObject(master_cfg, "watchdog_timeout_cycles",
-                                inst->config.master.watchdog_timeout_cycles);
-        cJSON_AddItemToObject(resp, "master_config", master_cfg);
     }
 
     char *json_str = cJSON_PrintUnformatted(resp);
