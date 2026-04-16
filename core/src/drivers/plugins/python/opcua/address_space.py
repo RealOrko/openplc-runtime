@@ -79,9 +79,21 @@ class AddressSpaceBuilder:
         self.node_permissions: Dict[str, VariablePermissions] = {}
         self.nodeid_to_variable: Dict[Any, str] = {}
 
+        # Cache of folder nodes keyed by dotted path, so variables that
+        # share a prefix share the same FolderType object.
+        # Example: both "PLC.Tank.heartbeat" and "PLC.Tank.level" resolve
+        # to the same Objects/PLC/Tank folder.
+        self._folder_cache: Dict[tuple, Node] = {}
+
     async def build(self) -> bool:
         """
         Create all nodes from configuration.
+
+        Simple variables, structs, and arrays whose node_id contains dots
+        are nested inside FolderType objects matching the dotted prefix —
+        e.g. node_id "PLC.Tank.heartbeat" puts the leaf at
+        Objects/PLC/Tank/heartbeat. node_ids without dots are placed
+        directly under Objects (unchanged behaviour).
 
         Returns:
             True if all nodes created successfully, False on error
@@ -93,7 +105,8 @@ class AddressSpaceBuilder:
             # Create simple variables
             for var in self.config.address_space.variables:
                 try:
-                    await self._create_simple_variable(objects, var)
+                    parent = await self._resolve_parent(objects, var.node_id)
+                    await self._create_simple_variable(parent, var)
                 except Exception as e:
                     log_error(f"Error creating variable {var.node_id}: {e}")
                     traceback.print_exc()
@@ -101,7 +114,8 @@ class AddressSpaceBuilder:
             # Create structures
             for struct in self.config.address_space.structures:
                 try:
-                    await self._create_struct(objects, struct)
+                    parent = await self._resolve_parent(objects, struct.node_id)
+                    await self._create_struct(parent, struct)
                 except Exception as e:
                     log_error(f"Error creating struct {struct.node_id}: {e}")
                     traceback.print_exc()
@@ -109,18 +123,67 @@ class AddressSpaceBuilder:
             # Create arrays
             for arr in self.config.address_space.arrays:
                 try:
-                    await self._create_array(objects, arr)
+                    parent = await self._resolve_parent(objects, arr.node_id)
+                    await self._create_array(parent, arr)
                 except Exception as e:
                     log_error(f"Error creating array {arr.node_id}: {e}")
                     traceback.print_exc()
 
-            log_debug(f"Created {len(self.variable_nodes)} variable nodes")
+            log_debug(
+                f"Created {len(self.variable_nodes)} variable nodes in "
+                f"{len(self._folder_cache)} folder(s)"
+            )
             return True
 
         except Exception as e:
             log_error(f"Failed to create address space: {e}")
             traceback.print_exc()
             return False
+
+    async def _resolve_parent(self, root: Node, node_id: str) -> Node:
+        """Split node_id on '.', take all-but-last as folder path, and
+        ensure a FolderType object exists for each segment under `root`.
+        Returns the deepest folder — i.e. the parent the leaf node should
+        be attached to. If node_id has no dots, returns `root` unchanged."""
+        segments = [s for s in (node_id or "").split(".") if s]
+        # Leaf is the last segment (used as browse_name by the caller); the
+        # prefix segments become the folder path.
+        prefix = tuple(segments[:-1])
+        if not prefix:
+            return root
+        return await self._ensure_folder_path(root, prefix)
+
+    async def _ensure_folder_path(self, root: Node, path: tuple) -> Node:
+        """Walk/create FolderType objects under `root` for each segment
+        in `path`, caching by prefix so siblings share folders."""
+        if not path:
+            return root
+        if path in self._folder_cache:
+            return self._folder_cache[path]
+
+        parent = await self._ensure_folder_path(root, path[:-1])
+        browse_name = path[-1]
+
+        # If a folder with this browse_name was pre-created (e.g. by a
+        # prior run of this same method that we haven't cached, or by
+        # some other part of the address space), adopt it rather than
+        # creating a duplicate.
+        existing = None
+        try:
+            existing = await parent.get_child([
+                f"{self.namespace_idx}:{browse_name}"
+            ])
+        except Exception:
+            existing = None
+
+        if existing is not None:
+            self._folder_cache[path] = existing
+            return existing
+
+        folder = await parent.add_folder(self.namespace_idx, browse_name)
+        self._folder_cache[path] = folder
+        log_debug(f"Created folder {'/'.join(path)}")
+        return folder
 
     async def _create_simple_variable(
         self,

@@ -1,8 +1,10 @@
 services:
   openplc-runtime:
-    # Pull the official image, or swap for `build: .` to build from source
-    image: ghcr.io/autonomy-logic/openplc-runtime:latest
-    # build: .
+    # Build locally so modifications to core/src and webserver/ take effect.
+    # Swap back to `image: ghcr.io/autonomy-logic/openplc-runtime:latest`
+    # (and comment out `build:`) to use the upstream pre-built image.
+    build: .
+    image: openplc-runtime:local
     container_name: openplc-runtime
     restart: unless-stopped
 

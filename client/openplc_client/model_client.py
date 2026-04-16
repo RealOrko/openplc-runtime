@@ -194,13 +194,35 @@ class OpcuaModelClient:
 
         for var in self._config.variables:
             browse_name = var["browse_name"]
-            node = await self._client.nodes.objects.get_child(
-                [f"{self._ns_idx}:{browse_name}"]
-            )
+            node = await self._resolve_variable_node(var)
             self._variables[browse_name] = _OpcuaVariable(
                 browse_name=browse_name,
                 datatype=var["datatype"],
                 node=node,
+            )
+
+    async def _resolve_variable_node(self, var: dict) -> Any:
+        """Walk the dotted `node_id` prefix as a FolderType path under
+        Objects, then attach to the leaf via browse_name. Backward
+        compatible with the old flat layout: if the prefix walk fails (no
+        such folder), fall back to looking up the leaf directly under
+        Objects."""
+        browse_name = var["browse_name"]
+        node_id = var.get("node_id", "") or ""
+        segments = [s for s in node_id.split(".") if s]
+        prefix = segments[:-1]
+
+        # Walk the prefix folders, then attach the leaf by browse_name.
+        try:
+            node = self._client.nodes.objects
+            for segment in prefix:
+                node = await node.get_child([f"{self._ns_idx}:{segment}"])
+            return await node.get_child([f"{self._ns_idx}:{browse_name}"])
+        except Exception:
+            # Fallback: older runtime builds placed every variable directly
+            # under Objects keyed by browse_name only.
+            return await self._client.nodes.objects.get_child(
+                [f"{self._ns_idx}:{browse_name}"]
             )
 
     async def close(self) -> None:

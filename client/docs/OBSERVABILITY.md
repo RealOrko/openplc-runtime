@@ -140,22 +140,25 @@ docker compose logs -f openplc-runtime
 
 ## How the runtime's OPC-UA plugin lays out nodes
 
-Worth knowing if you write your own OPC-UA clients against the runtime.
+The plugin nests every variable under a `FolderType` hierarchy derived
+from the dots in its `node_id`. A config entry with
+`"node_id": "PLC.Tank.heartbeat"` ends up at
+`Objects → PLC → Tank → heartbeat`; folder objects are deduplicated so
+siblings with the same prefix share the same folder. Variables whose
+`node_id` has no dots are placed directly under `Objects` — identical
+behaviour to the pre-hierarchy builds.
 
-The plugin places **every variable as a direct child of `Objects`**, keyed
-by `browse_name`. The dotted `node_id` in `conf/opcua.json` (e.g.
-`"PLC.Tank.heartbeat"`) is treated as a label, not a path — it doesn't
-create a folder hierarchy. Only the leaf matters for resolution.
-
-That means a raw asyncua lookup looks like this — **not** a dotted walk:
+A raw asyncua browse is the natural dotted walk:
 
 ```python
 ns = await client.get_namespace_index("urn:openplc:tank_sim")
-node = await client.nodes.objects.get_child([f"{ns}:heartbeat"])
+plc = await client.nodes.objects.get_child([f"{ns}:PLC"])
+tank = await plc.get_child([f"{ns}:Tank"])
+heartbeat = await tank.get_child([f"{ns}:heartbeat"])
 ```
 
-`openplc_client.model_client.connect()` hides this entirely. Prefer it
-over writing resolution logic by hand:
+`openplc_client.model_client.connect()` does the walk for you and falls
+back to a flat-layout lookup if you point it at an older runtime build:
 
 ```python
 async with connect("./models/tank_sim") as m:
