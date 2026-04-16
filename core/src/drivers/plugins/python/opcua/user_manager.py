@@ -525,11 +525,13 @@ class OpenPLCUserManager(UserManager):
             log_warn("Anonymous authentication not allowed for this profile")
             return None, None
 
-        # Anonymous users get viewer role (read-only)
-        openplc_role = "viewer"
+        # Anonymous role defaults to viewer (read-only) unless the profile
+        # explicitly elevates it via `anonymous_role` in the config.
+        openplc_role = getattr(profile, "anonymous_role", None) or "viewer"
+        asyncua_role = self.ROLE_MAPPING.get(openplc_role, UserRole.User)
 
-        # Return asyncua User object
-        return User(role=UserRole.User, name="anonymous"), openplc_role
+        log_debug(f"Anonymous client granted role '{openplc_role}'")
+        return User(role=asyncua_role, name="anonymous"), openplc_role
 
     def _extract_cert_id(self, certificate: Any) -> Optional[str]:
         """

@@ -42,6 +42,10 @@ class SecurityProfile:
     security_policy: str
     security_mode: str
     auth_methods: List[str]
+    # Optional: role to grant anonymous clients on this profile. Defaults to
+    # "viewer" (read-only) when unset; set to "operator" or "engineer" to
+    # allow unauthenticated write access for development/simulation.
+    anonymous_role: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'SecurityProfile':
@@ -60,7 +64,8 @@ class SecurityProfile:
             enabled=enabled,
             security_policy=security_policy,
             security_mode=security_mode,
-            auth_methods=auth_methods
+            auth_methods=auth_methods,
+            anonymous_role=data.get("anonymous_role"),
         )
 
 @dataclass
