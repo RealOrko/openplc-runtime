@@ -305,10 +305,10 @@ source_reservoir_inflow := 0.05;
 source_reservoir_outflow := 0.0;
 IF intake_screen_status THEN
     IF intake_pump_01_run_fb THEN
-        source_reservoir_outflow := source_reservoir_outflow + 0.08;
+        source_reservoir_outflow := source_reservoir_outflow + 0.05;
     END_IF;
     IF intake_pump_02_run_fb THEN
-        source_reservoir_outflow := source_reservoir_outflow + 0.08;
+        source_reservoir_outflow := source_reservoir_outflow + 0.05;
     END_IF;
 END_IF;
 source_reservoir_level := source_reservoir_level + source_reservoir_inflow - source_reservoir_outflow;
@@ -350,10 +350,10 @@ coagulant_dosing_low_stock_alarm := coagulant_dosing_stock_level < 20.0;
 (* --- Flash Mixer --- *)
 flash_mixer_agit_ok := flash_mixer_agitator_cmd AND NOT flash_mixer_agitator_fault;
 flash_mixer_inflow := 0.0;
-IF intake_pump_01_run_fb THEN flash_mixer_inflow := flash_mixer_inflow + 0.08; END_IF;
-IF intake_pump_02_run_fb THEN flash_mixer_inflow := flash_mixer_inflow + 0.08; END_IF;
+IF intake_pump_01_run_fb THEN flash_mixer_inflow := flash_mixer_inflow + 0.05; END_IF;
+IF intake_pump_02_run_fb THEN flash_mixer_inflow := flash_mixer_inflow + 0.05; END_IF;
 IF flash_mixer_level > 5.0 AND flash_mixer_agit_ok THEN
-    flash_mixer_outflow := 0.07;
+    flash_mixer_outflow := 0.05;
 ELSE
     flash_mixer_outflow := 0.0;
 END_IF;
@@ -367,7 +367,7 @@ flash_mixer_level_low_alarm  := flash_mixer_level < 10.0;
 floc_basin_01_agit_ok := floc_basin_01_agitator_cmd AND NOT floc_basin_01_agitator_fault;
 floc_basin_01_inflow := flash_mixer_outflow * 0.5;
 IF floc_basin_01_level > 5.0 AND floc_basin_01_agit_ok THEN
-    floc_basin_01_outflow := 0.035;
+    floc_basin_01_outflow := 0.025;
 ELSE
     floc_basin_01_outflow := 0.0;
 END_IF;
@@ -381,7 +381,7 @@ floc_basin_01_level_low_alarm  := floc_basin_01_level < 10.0;
 floc_basin_02_agit_ok := floc_basin_02_agitator_cmd AND NOT floc_basin_02_agitator_fault;
 floc_basin_02_inflow := flash_mixer_outflow * 0.5;
 IF floc_basin_02_level > 5.0 AND floc_basin_02_agit_ok THEN
-    floc_basin_02_outflow := 0.035;
+    floc_basin_02_outflow := 0.025;
 ELSE
     floc_basin_02_outflow := 0.0;
 END_IF;
@@ -398,7 +398,7 @@ floc_basin_02_level_low_alarm  := floc_basin_02_level < 10.0;
 (* --- Clarifier 01 (from Floc Basin 01) --- *)
 clarifier_01_inflow := floc_basin_01_outflow;
 IF clarifier_01_level > 5.0 THEN
-    clarifier_01_outflow := 0.03;
+    clarifier_01_outflow := 0.025;
 ELSE
     clarifier_01_outflow := 0.0;
 END_IF;
@@ -411,7 +411,7 @@ clarifier_01_level_low_alarm  := clarifier_01_level < 10.0;
 (* --- Clarifier 02 (from Floc Basin 02) --- *)
 clarifier_02_inflow := floc_basin_02_outflow;
 IF clarifier_02_level > 5.0 THEN
-    clarifier_02_outflow := 0.03;
+    clarifier_02_outflow := 0.025;
 ELSE
     clarifier_02_outflow := 0.0;
 END_IF;
@@ -446,7 +446,7 @@ IF filter_01_backwash_active THEN
 ELSE
     filter_01_inflow := clarifier_01_outflow * 0.5;
     IF filter_01_level > 5.0 THEN
-        filter_01_outflow := 0.025;
+        filter_01_outflow := 0.0125;
     ELSE
         filter_01_outflow := 0.0;
     END_IF;
@@ -485,7 +485,7 @@ IF filter_02_backwash_active THEN
 ELSE
     filter_02_inflow := clarifier_01_outflow * 0.5;
     IF filter_02_level > 5.0 THEN
-        filter_02_outflow := 0.025;
+        filter_02_outflow := 0.0125;
     ELSE
         filter_02_outflow := 0.0;
     END_IF;
@@ -524,7 +524,7 @@ IF filter_03_backwash_active THEN
 ELSE
     filter_03_inflow := clarifier_02_outflow * 0.5;
     IF filter_03_level > 5.0 THEN
-        filter_03_outflow := 0.025;
+        filter_03_outflow := 0.0125;
     ELSE
         filter_03_outflow := 0.0;
     END_IF;
@@ -563,7 +563,7 @@ IF filter_04_backwash_active THEN
 ELSE
     filter_04_inflow := clarifier_02_outflow * 0.5;
     IF filter_04_level > 5.0 THEN
-        filter_04_outflow := 0.025;
+        filter_04_outflow := 0.0125;
     ELSE
         filter_04_outflow := 0.0;
     END_IF;
@@ -607,7 +607,7 @@ chlorine_dosing_low_stock_alarm := chlorine_dosing_stock_level < 20.0;
 contact_tank_inflow :=
     filter_01_outflow + filter_02_outflow + filter_03_outflow + filter_04_outflow;
 IF contact_tank_level > 5.0 THEN
-    contact_tank_outflow := 0.08;
+    contact_tank_outflow := 0.05;
 ELSE
     contact_tank_outflow := 0.0;
 END_IF;
@@ -718,8 +718,8 @@ clearwell_level_low_alarm  := clearwell_level < 10.0;
 (* ============================================================ *)
 
 total_inflow := 0.0;
-IF intake_pump_01_run_fb THEN total_inflow := total_inflow + 0.08; END_IF;
-IF intake_pump_02_run_fb THEN total_inflow := total_inflow + 0.08; END_IF;
+IF intake_pump_01_run_fb THEN total_inflow := total_inflow + 0.05; END_IF;
+IF intake_pump_02_run_fb THEN total_inflow := total_inflow + 0.05; END_IF;
 
 total_outflow := 0.0;
 IF distribution_pump_01_run_fb THEN total_outflow := total_outflow + 0.05; END_IF;

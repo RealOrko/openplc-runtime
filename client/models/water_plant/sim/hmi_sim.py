@@ -2,7 +2,8 @@
 
 Connects to the OpenPLC runtime's OPC-UA server as the configured operator,
 drives realistic plant traffic: startup sequencing, lead/lag pump rotation,
-filter-backwash scheduling, alarm response, setpoint wander, fault drills.
+filter-backwash scheduling, rising-edge alarm response with auto-recovery,
+setpoint wander, periodic fault drills, and chemical-stock refills.
 
 Run after `openplc_client deploy ./models/water_plant`:
 
@@ -28,20 +29,19 @@ from openplc_client.model_client import connect  # noqa: E402
 MODEL_DIR = Path(__file__).resolve().parents[1]
 
 STATUS_PERIOD_S = 3.0
-ROTATE_PERIOD_S = 45.0       # lead/lag swap cadence
+ROTATE_PERIOD_S = 45.0
 BACKWASH_CHECK_PERIOD_S = 8.0
 BACKWASH_DP_THRESHOLD = 70.0
 ALARM_POLL_PERIOD_S = 1.5
 SETPOINT_WANDER_PERIOD_S = 20.0
 FAULT_DRILL_PERIOD_S = 90.0
+REFILL_CHECK_PERIOD_S = 5.0
+REFILL_DELAY_S = 10.0
 
 INTAKE_PUMPS = ("intake_pump_01", "intake_pump_02")
 DIST_PUMPS = ("distribution_pump_01", "distribution_pump_02")
 FILTERS = ("filter_01", "filter_02", "filter_03", "filter_04")
-AGITATORS = ("flash_mixer", "floc_basin_01", "floc_basin_02")
 
-# equipment the drill loop may fault-inject — critical items (all distribution
-# pumps, both intake pumps simultaneously) excluded so the plant keeps flowing.
 FAULT_CANDIDATES = (
     "intake_screen_fault",
     "flash_mixer_agitator_fault",
@@ -50,9 +50,47 @@ FAULT_CANDIDATES = (
     "coagulant_dosing_pump_fault",
 )
 
+# Alarms that, when active, gate the intake/distribution pump groups off.
+INTAKE_STOP_ALARMS = ("source_reservoir_level_low_alarm", "flash_mixer_level_high_alarm")
+DIST_STOP_ALARMS = ("clearwell_level_low_alarm",)
+
+# Other alarms we edge-detect for telemetry and reactions.
+OTHER_ALARMS = (
+    "contact_tank_cl_low_alarm",
+    "coagulant_dosing_low_stock_alarm",
+    "chlorine_dosing_low_stock_alarm",
+    "source_reservoir_level_high_alarm",
+    "flash_mixer_level_low_alarm",
+    "clearwell_level_high_alarm",
+)
+
+ALL_WATCHED_ALARMS = INTAKE_STOP_ALARMS + DIST_STOP_ALARMS + OTHER_ALARMS
+
+# Shared operator state; helpers below read from it so rotation and alarm
+# loops don't trample each other's pump commands.
+_plant_state: dict = {
+    "intake_lead": 0,
+    "dist_lead": 0,
+    "intake_safe": True,
+    "dist_safe": True,
+}
+
+
+async def _apply_intake_cmds(m) -> None:
+    lead = _plant_state["intake_lead"]
+    safe = _plant_state["intake_safe"]
+    await m.write(f"{INTAKE_PUMPS[lead]}_run_cmd", safe)
+    await m.write(f"{INTAKE_PUMPS[1 - lead]}_run_cmd", False)
+
+
+async def _apply_dist_cmds(m) -> None:
+    lead = _plant_state["dist_lead"]
+    safe = _plant_state["dist_safe"]
+    await m.write(f"{DIST_PUMPS[lead]}_run_cmd", safe)
+    await m.write(f"{DIST_PUMPS[1 - lead]}_run_cmd", False)
+
 
 async def _startup(m) -> None:
-    """Bring the plant to nominal operating state."""
     await m.write("emergency_stop", False)
     await m.write("plant_running", True)
     await m.write("intake_screen_cmd", True)
@@ -61,10 +99,8 @@ async def _startup(m) -> None:
     await m.write("floc_basin_02_agitator_cmd", True)
     await m.write("coagulant_dosing_pump_run_cmd", True)
     await m.write("chlorine_dosing_pump_run_cmd", True)
-    await m.write("intake_pump_01_run_cmd", True)          # lead
-    await m.write("intake_pump_02_run_cmd", False)         # lag
-    await m.write("distribution_pump_01_run_cmd", True)    # lead
-    await m.write("distribution_pump_02_run_cmd", False)   # lag
+    await _apply_intake_cmds(m)
+    await _apply_dist_cmds(m)
     print("[hmi] startup complete: plant running, lead pumps online", flush=True)
 
 
@@ -104,31 +140,24 @@ async def _status_loop(m, stop: asyncio.Event) -> None:
 
 
 async def _rotate_loop(m, stop: asyncio.Event) -> None:
-    """Swap lead/lag duty on intake and distribution pump pairs."""
-    intake_lead = 0
-    dist_lead = 0
     while not stop.is_set():
         try:
             await asyncio.wait_for(stop.wait(), timeout=ROTATE_PERIOD_S)
             return
         except asyncio.TimeoutError:
             pass
-        intake_lead ^= 1
-        await m.write(f"{INTAKE_PUMPS[intake_lead]}_run_cmd", True)
-        await m.write(f"{INTAKE_PUMPS[1 - intake_lead]}_run_cmd", False)
-        dist_lead ^= 1
-        await m.write(f"{DIST_PUMPS[dist_lead]}_run_cmd", True)
-        await m.write(f"{DIST_PUMPS[1 - dist_lead]}_run_cmd", False)
+        _plant_state["intake_lead"] ^= 1
+        _plant_state["dist_lead"] ^= 1
+        await _apply_intake_cmds(m)
+        await _apply_dist_cmds(m)
         print(
-            f"[hmi] lead rotation: intake -> {INTAKE_PUMPS[intake_lead]}, "
-            f"distribution -> {DIST_PUMPS[dist_lead]}",
+            f"[hmi] lead rotation: intake -> {INTAKE_PUMPS[_plant_state['intake_lead']]}, "
+            f"distribution -> {DIST_PUMPS[_plant_state['dist_lead']]}",
             flush=True,
         )
 
 
 async def _backwash_loop(m, stop: asyncio.Event) -> None:
-    """Round-robin backwash: trigger whichever filter has the highest dP and
-    exceeds threshold, or the next one in sequence on a long idle timer."""
     rr = 0
     while not stop.is_set():
         try:
@@ -140,7 +169,6 @@ async def _backwash_loop(m, stop: asyncio.Event) -> None:
             *[f"{f}_diff_pressure" for f in FILTERS],
             *[f"{f}_backwash_active" for f in FILTERS],
         )
-        # Don't stack backwashes: skip if any filter is already in cycle.
         if any(snap[f"{f}_backwash_active"] for f in FILTERS):
             continue
         candidates = [
@@ -154,7 +182,6 @@ async def _backwash_loop(m, stop: asyncio.Event) -> None:
             target = FILTERS[rr % len(FILTERS)]
             rr += 1
         await m.write(f"{target}_backwash_cmd", True)
-        # one-shot: clear cmd shortly so next rising-edge still triggers.
         await asyncio.sleep(0.3)
         await m.write(f"{target}_backwash_cmd", False)
         print(
@@ -163,41 +190,60 @@ async def _backwash_loop(m, stop: asyncio.Event) -> None:
         )
 
 
+async def _on_alarm_rise(m, name: str, snap: dict) -> None:
+    if name in INTAKE_STOP_ALARMS:
+        if _plant_state["intake_safe"]:
+            _plant_state["intake_safe"] = False
+            await _apply_intake_cmds(m)
+            print(f"[hmi] {name} -> intake pumps stopped", flush=True)
+    elif name in DIST_STOP_ALARMS:
+        if _plant_state["dist_safe"]:
+            _plant_state["dist_safe"] = False
+            await _apply_dist_cmds(m)
+            print(f"[hmi] {name} -> distribution pumps stopped", flush=True)
+    elif name == "contact_tank_cl_low_alarm":
+        new_sp = min(snap["chlorine_dosing_dose_sp"] + 0.1, 3.0)
+        if new_sp != snap["chlorine_dosing_dose_sp"]:
+            await m.write("chlorine_dosing_dose_sp", new_sp)
+            print(f"[hmi] Cl low -> raising chlorine_dosing_dose_sp to {new_sp:.2f}", flush=True)
+    elif name == "coagulant_dosing_low_stock_alarm":
+        print("[hmi] coagulant stock LOW", flush=True)
+    elif name == "chlorine_dosing_low_stock_alarm":
+        print("[hmi] chlorine stock LOW", flush=True)
+    else:
+        print(f"[hmi] alarm raised: {name}", flush=True)
+
+
+async def _on_alarm_fall(m, name: str, snap: dict) -> None:
+    if name in INTAKE_STOP_ALARMS:
+        if not any(snap[a] for a in INTAKE_STOP_ALARMS):
+            _plant_state["intake_safe"] = True
+            await _apply_intake_cmds(m)
+            print(f"[hmi] {name} cleared -> intake lead re-enabled", flush=True)
+    elif name in DIST_STOP_ALARMS:
+        if not any(snap[a] for a in DIST_STOP_ALARMS):
+            _plant_state["dist_safe"] = True
+            await _apply_dist_cmds(m)
+            print(f"[hmi] {name} cleared -> distribution lead re-enabled", flush=True)
+    else:
+        print(f"[hmi] alarm cleared: {name}", flush=True)
+
+
 async def _alarm_loop(m, stop: asyncio.Event) -> None:
-    """React to alarms: close upstream on a tank-high, reduce load on
-    clearwell-low, raise chlorine setpoint on low residual."""
+    prev: dict = {}
     while not stop.is_set():
-        snap = await m.snapshot(
-            "master_alarm",
-            "source_reservoir_level_high_alarm", "source_reservoir_level_low_alarm",
-            "flash_mixer_level_high_alarm",
-            "clearwell_level_low_alarm", "clearwell_level_high_alarm",
-            "contact_tank_cl_low_alarm",
-            "chlorine_dosing_dose_sp",
-            "coagulant_dosing_low_stock_alarm",
-            "chlorine_dosing_low_stock_alarm",
-        )
-        if snap["flash_mixer_level_high_alarm"]:
-            await m.write("intake_pump_01_run_cmd", False)
-            await m.write("intake_pump_02_run_cmd", False)
-            print("[hmi] flash_mixer HIGH -> intake pumps stopped", flush=True)
-        if snap["source_reservoir_level_low_alarm"]:
-            await m.write("intake_pump_01_run_cmd", False)
-            await m.write("intake_pump_02_run_cmd", False)
-            print("[hmi] source_reservoir LOW -> intake pumps stopped", flush=True)
-        if snap["clearwell_level_low_alarm"]:
-            await m.write("distribution_pump_01_run_cmd", False)
-            await m.write("distribution_pump_02_run_cmd", False)
-            print("[hmi] clearwell LOW -> distribution pumps stopped", flush=True)
-        if snap["contact_tank_cl_low_alarm"]:
-            new_sp = min(snap["chlorine_dosing_dose_sp"] + 0.1, 3.0)
-            if new_sp != snap["chlorine_dosing_dose_sp"]:
-                await m.write("chlorine_dosing_dose_sp", new_sp)
-                print(f"[hmi] Cl low -> raising chlorine_dosing_dose_sp to {new_sp:.2f}", flush=True)
-        if snap["coagulant_dosing_low_stock_alarm"]:
-            print("[hmi] coagulant stock LOW (manual refill required)", flush=True)
-        if snap["chlorine_dosing_low_stock_alarm"]:
-            print("[hmi] chlorine stock LOW (manual refill required)", flush=True)
+        snap = await m.snapshot(*ALL_WATCHED_ALARMS, "chlorine_dosing_dose_sp")
+        for name in ALL_WATCHED_ALARMS:
+            now = bool(snap[name])
+            was = prev.get(name)
+            if was is None:
+                prev[name] = now
+                continue
+            if now and not was:
+                await _on_alarm_rise(m, name, snap)
+            elif was and not now:
+                await _on_alarm_fall(m, name, snap)
+            prev[name] = now
         try:
             await asyncio.wait_for(stop.wait(), timeout=ALARM_POLL_PERIOD_S)
         except asyncio.TimeoutError:
@@ -205,7 +251,6 @@ async def _alarm_loop(m, stop: asyncio.Event) -> None:
 
 
 async def _setpoint_wander_loop(m, stop: asyncio.Event) -> None:
-    """Small random walk on dose setpoints to keep OPC-UA writes continuous."""
     while not stop.is_set():
         try:
             await asyncio.wait_for(stop.wait(), timeout=SETPOINT_WANDER_PERIOD_S)
@@ -221,7 +266,6 @@ async def _setpoint_wander_loop(m, stop: asyncio.Event) -> None:
 
 
 async def _fault_drill_loop(m, stop: asyncio.Event) -> None:
-    """Periodically inject then clear a fault on a non-critical item."""
     while not stop.is_set():
         try:
             await asyncio.wait_for(stop.wait(), timeout=FAULT_DRILL_PERIOD_S)
@@ -238,6 +282,41 @@ async def _fault_drill_loop(m, stop: asyncio.Event) -> None:
             pass
         await m.write(target, False)
         print(f"[hmi] fault drill: cleared {target}", flush=True)
+
+
+async def _refill_tank(m, stock_name: str, label: str) -> None:
+    await asyncio.sleep(REFILL_DELAY_S)
+    await m.write(stock_name, 100.0)
+    print(f"[hmi] {label} tanker refill complete", flush=True)
+
+
+async def _refill_loop(m, stop: asyncio.Event) -> None:
+    prev_coag = False
+    prev_cl = False
+    pending_coag: asyncio.Task | None = None
+    pending_cl: asyncio.Task | None = None
+    while not stop.is_set():
+        snap = await m.snapshot(
+            "coagulant_dosing_low_stock_alarm", "chlorine_dosing_low_stock_alarm"
+        )
+        if snap["coagulant_dosing_low_stock_alarm"] and not prev_coag:
+            if pending_coag is None or pending_coag.done():
+                print(f"[hmi] scheduling coagulant refill in {REFILL_DELAY_S:.0f} s", flush=True)
+                pending_coag = asyncio.create_task(
+                    _refill_tank(m, "coagulant_dosing_stock_level", "coagulant")
+                )
+        if snap["chlorine_dosing_low_stock_alarm"] and not prev_cl:
+            if pending_cl is None or pending_cl.done():
+                print(f"[hmi] scheduling chlorine refill in {REFILL_DELAY_S:.0f} s", flush=True)
+                pending_cl = asyncio.create_task(
+                    _refill_tank(m, "chlorine_dosing_stock_level", "chlorine")
+                )
+        prev_coag = snap["coagulant_dosing_low_stock_alarm"]
+        prev_cl = snap["chlorine_dosing_low_stock_alarm"]
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=REFILL_CHECK_PERIOD_S)
+        except asyncio.TimeoutError:
+            pass
 
 
 async def run(host: str) -> None:
@@ -259,6 +338,7 @@ async def run(host: str) -> None:
             _alarm_loop(m, stop),
             _setpoint_wander_loop(m, stop),
             _fault_drill_loop(m, stop),
+            _refill_loop(m, stop),
         )
 
 
