@@ -1,0 +1,49 @@
+services:
+  openplc-runtime:
+    # Pull the official image, or swap for `build: .` to build from source
+    image: ghcr.io/autonomy-logic/openplc-runtime:latest
+    # build: .
+    container_name: openplc-runtime
+    restart: unless-stopped
+
+    # Published ports:
+    #   8443 - REST API / OpenPLC Editor connection (always required)
+    #   5020 - Modbus TCP Slave (map to host 502 if you need the standard port)
+    #   4840 - OPC UA Server
+    ports:
+      - "8443:8443"
+      - "5020:5020"
+      - "4840:4840"
+
+    # Capabilities required by the real-time runtime:
+    #   SYS_NICE  - sched_setscheduler(SCHED_FIFO) in core/src/plc_app/utils/utils.c
+    #   IPC_LOCK  - mlockall(MCL_CURRENT|MCL_FUTURE) in the same file
+    cap_add:
+      - SYS_NICE
+      - IPC_LOCK
+
+    # Matching ulimits so the caps can actually be used
+    ulimits:
+      memlock: -1
+      rtprio: 99
+
+    volumes:
+      # Persists .env, restapi.db (user accounts), and runtime sockets
+      - openplc-runtime-data:/var/run/runtime
+      # Optional: mount a pre-configured plugin list to have plugins enabled at boot.
+      # Copy plugins.conf.docker to plugins.conf and edit to taste.
+      # - ./plugins.conf.docker:/workdir/plugins.conf:ro
+
+    healthcheck:
+      test:
+        - "CMD"
+        - "python3"
+        - "-c"
+        - "import ssl,socket;s=socket.create_connection(('127.0.0.1',8443),timeout=5);ssl._create_unverified_context().wrap_socket(s,server_hostname='localhost').close()"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+volumes:
+  openplc-runtime-data:

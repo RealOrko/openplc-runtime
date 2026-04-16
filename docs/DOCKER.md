@@ -25,13 +25,19 @@ docker pull ghcr.io/autonomy-logic/openplc-runtime:latest
 docker run -d \
   --name openplc-runtime \
   -p 8443:8443 \
+  -p 5020:5020 \
+  -p 4840:4840 \
   --cap-add=SYS_NICE \
-  --cap-add=SYS_RESOURCE \
+  --cap-add=IPC_LOCK \
+  --ulimit memlock=-1 \
+  --ulimit rtprio=99 \
   -v openplc-runtime-data:/var/run/runtime \
   ghcr.io/autonomy-logic/openplc-runtime:latest
 ```
 
-**Note:** The runtime will listen on port 8443 for connections from the OpenPLC Editor. Do not open https://localhost:8443 in a browser - there is no web interface. Connect to it from the OpenPLC Editor desktop application.
+**Note:** Port 8443 is for the OpenPLC Editor connection and has no browser UI. Ports 5020 (Modbus TCP Slave) and 4840 (OPC UA) are the fieldbus protocols exposed by the built-in plugins, and are only open when those plugins are enabled in `plugins.conf`. See [Enabling Plugins](#enabling-plugins) below.
+
+For most users, `docker-compose` is the recommended path — see [Docker Compose](#docker-compose).
 
 ### Stop and Remove
 
@@ -103,17 +109,27 @@ docker run -d \
 
 ## Port Mapping
 
-### Default Port
+### Exposed Ports
 
-The runtime exposes port 8443 for REST API access from the OpenPLC Editor:
+| Port | Protocol | Purpose | Plugin required |
+|------|----------|---------|-----------------|
+| 8443 | HTTPS    | REST API and WebSocket debug for the OpenPLC Editor | Always on |
+| 5020 | Modbus TCP | Modbus Slave | `modbus_slave` enabled |
+| 4840 | OPC UA   | OPC UA Server | `opcua` enabled |
+
+Ports for fieldbus protocols only start listening once the corresponding plugin is enabled — see [Enabling Plugins](#enabling-plugins).
+
+### Using the Standard Modbus Port
+
+To expose Modbus TCP on the standard port 502 on the host while the container continues to listen on 5020:
 
 ```bash
--p 8443:8443
+-p 502:5020
 ```
 
-### Custom Port
+### Custom Host Port
 
-To use a different host port:
+To use a different host port for the Editor:
 
 ```bash
 -p 9443:8443  # Editor connects to https://localhost:9443
@@ -129,11 +145,38 @@ To restrict access to localhost:
 
 ### Multiple Interfaces
 
-To bind to specific interface:
+To bind to a specific interface:
 
 ```bash
 -p 192.168.1.100:8443:8443
 ```
+
+## Enabling Plugins
+
+By default every plugin in `plugins.conf` ships disabled (the third field is `0`). That means ports 5020 (Modbus) and 4840 (OPC UA) are exposed by the container but nothing is listening on them until a plugin is turned on.
+
+There are two ways to enable plugins:
+
+### Option A — Mount a pre-configured plugins.conf
+
+The repo ships a sample `plugins.conf.docker` with `modbus_slave` and `opcua` pre-enabled. Mount it over the default:
+
+```bash
+docker run -d \
+  --name openplc-runtime \
+  -p 8443:8443 -p 5020:5020 -p 4840:4840 \
+  --cap-add=SYS_NICE --cap-add=IPC_LOCK \
+  --ulimit memlock=-1 --ulimit rtprio=99 \
+  -v openplc-runtime-data:/var/run/runtime \
+  -v $(pwd)/plugins.conf.docker:/workdir/plugins.conf:ro \
+  ghcr.io/autonomy-logic/openplc-runtime:latest
+```
+
+The equivalent line is already present (commented out) in `docker-compose.yml`.
+
+### Option B — Enable through the REST API
+
+Use the OpenPLC Editor (or the `/api/plugins/*` endpoints) to toggle plugins. Because `plugins.conf` lives inside the image at `/workdir/plugins.conf`, these changes are lost when the container is recreated unless you bind-mount the file as in Option A.
 
 ## Environment Variables
 
@@ -168,103 +211,86 @@ Provide a custom pepper for password hashing:
 
 ## Real-Time Scheduling
 
-For real-time performance, the container may need privileged mode:
+The runtime core runs the PLC scan cycle with `SCHED_FIFO` priority and calls `mlockall(MCL_CURRENT|MCL_FUTURE)` to keep memory pinned. Both require extra privileges the default Docker sandbox does not grant.
 
-```bash
-docker run -d \
-  --name openplc-runtime \
-  --privileged \
-  -p 8443:8443 \
-  -v openplc-runtime-data:/var/run/runtime \
-  ghcr.io/autonomy-logic/openplc-runtime:latest
-```
-
-**Alternative (More Secure):**
-
-Grant specific capabilities instead of full privileged mode:
+**Recommended (least privilege):**
 
 ```bash
 docker run -d \
   --name openplc-runtime \
   --cap-add=SYS_NICE \
-  -p 8443:8443 \
+  --cap-add=IPC_LOCK \
+  --ulimit memlock=-1 \
+  --ulimit rtprio=99 \
+  -p 8443:8443 -p 5020:5020 -p 4840:4840 \
   -v openplc-runtime-data:/var/run/runtime \
   ghcr.io/autonomy-logic/openplc-runtime:latest
 ```
 
 **Capabilities:**
-- `SYS_NICE` - Required for SCHED_FIFO real-time scheduling
+- `SYS_NICE` — Required for `sched_setscheduler(SCHED_FIFO)` real-time scheduling
+- `IPC_LOCK` — Required for `mlockall()` to pin the runtime's memory
+
+**Ulimits:**
+- `memlock=-1` — Lets the process lock unlimited memory (paired with `IPC_LOCK`)
+- `rtprio=99` — Allows the process to request real-time scheduling priorities
+
+Without these, the runtime still starts but logs errors from `sched_setscheduler` and `mlockall` on boot, and scan-cycle jitter will be higher.
+
+**Fallback (full privilege):**
+
+```bash
+docker run -d \
+  --name openplc-runtime \
+  --privileged \
+  -p 8443:8443 -p 5020:5020 -p 4840:4840 \
+  -v openplc-runtime-data:/var/run/runtime \
+  ghcr.io/autonomy-logic/openplc-runtime:latest
+```
 
 ## Docker Compose
 
-### Basic Configuration
+### Recommended Setup
 
-Create `docker-compose.yml`:
-
-```yaml
-version: '3.8'
-
-services:
-  openplc-runtime:
-    image: ghcr.io/autonomy-logic/openplc-runtime:latest
-    container_name: openplc-runtime
-    ports:
-      - "8443:8443"
-    volumes:
-      - openplc-runtime-data:/var/run/runtime
-    restart: unless-stopped
-
-volumes:
-  openplc-runtime-data:
-```
+A ready-to-use `docker-compose.yml` is included at the repository root. It publishes the Editor, Modbus, and OPC UA ports, adds the capabilities and ulimits needed for real-time scheduling, wires up a persistent volume, and runs a TLS handshake healthcheck.
 
 **Start:**
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 **Stop:**
 ```bash
-docker-compose down
+docker compose down
 ```
 
-### Advanced Configuration
+**Tail logs:**
+```bash
+docker compose logs -f
+```
+
+### Enabling Plugins at Boot
+
+By default the bundled compose file starts with all plugins disabled (so only port 8443 is actually listening). To have Modbus Slave and OPC UA running on first start, uncomment the plugins.conf bind mount in `docker-compose.yml`:
 
 ```yaml
-version: '3.8'
-
-services:
-  openplc-runtime:
-    image: ghcr.io/autonomy-logic/openplc-runtime:latest
-    container_name: openplc-runtime
-    cap_add:
-      - SYS_NICE
-    ports:
-      - "127.0.0.1:8443:8443"
     volumes:
       - openplc-runtime-data:/var/run/runtime
-      - ./plugins.conf:/workdir/plugins.conf:ro
-    environment:
-      - TZ=America/New_York
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-k", "-f", "https://localhost:8443/api/ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-
-volumes:
-  openplc-runtime-data:
+      - ./plugins.conf.docker:/workdir/plugins.conf:ro
 ```
 
-**Features:**
-- Localhost-only access
-- Real-time scheduling capability
-- Custom plugin configuration
-- Timezone setting
-- Health check monitoring
-- Auto-restart on failure
+`plugins.conf.docker` ships with `modbus_slave` and `opcua` enabled. Copy it and edit to suit before mounting if you want a different combination.
+
+### Localhost-Only Variant
+
+To restrict access to the host machine, change the `ports` list to bind to `127.0.0.1`:
+
+```yaml
+    ports:
+      - "127.0.0.1:8443:8443"
+      - "127.0.0.1:5020:5020"
+      - "127.0.0.1:4840:4840"
+```
 
 ## Building Custom Images
 
@@ -500,10 +526,19 @@ curl -k https://localhost:8443/api/ping
 ### Real-Time Performance Issues
 
 **Solutions:**
-- Use `--privileged` or `--cap-add=SYS_NICE`
+- Use `--privileged`, or the full capability set: `--cap-add=SYS_NICE --cap-add=IPC_LOCK --ulimit memlock=-1 --ulimit rtprio=99`
 - Increase container resources
 - Use host network mode
 - Check host system load
+
+### Cannot Reach Modbus or OPC UA From Another Host
+
+This is the most common connectivity complaint. Run through:
+
+1. **Ports published?** `docker port openplc-runtime` should show 5020 and 4840 mapped. If only 8443 is listed, your run command or compose file is missing them.
+2. **Plugin enabled?** A published port does nothing if the plugin is not loaded. Check `plugins.conf` — the third field must be `1` for `modbus_slave` and/or `opcua`. Either mount `plugins.conf.docker` (see [Enabling Plugins](#enabling-plugins)) or toggle via the REST API.
+3. **Endpoint bound to the right address?** If you are running a stack built before this fix, the OPC UA template defaulted to `opc.tcp://localhost:4840/...` and the Modbus slave defaulted to a developer LAN IP. Both now default to `0.0.0.0`. If you have an old config in `plugins/python/opcua/opcua.json` or a saved Modbus config, edit it to bind to `0.0.0.0`.
+4. **Host firewall.** Confirm the host's firewall allows the mapped ports in.
 
 ### Volume Permission Errors
 

@@ -979,7 +979,7 @@ logger: PluginLogger = None
 server_loop = None  # Reference to the server's event loop for cross-thread operations
 server_started_event = threading.Event()  # Signals successful server startup
 server_error = None  # Stores any startup error message
-gIp = "172.29.65.104"  # Default values
+gIp = "0.0.0.0"  # Default values
 gPort = 5020
 
 # Retry configuration for server restart

@@ -7,7 +7,7 @@
         "name": "OpenPLC OPC UA Server",
         "application_uri": "urn:freeopcua:python:server",
         "product_uri": "urn:openplc:runtime:product",
-        "endpoint_url": "opc.tcp://localhost:4840/openplc/opcua",
+        "endpoint_url": "opc.tcp://0.0.0.0:4840/openplc/opcua",
         "security_profiles": [
           {
             "name": "insecure",
