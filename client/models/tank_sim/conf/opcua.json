@@ -1,0 +1,113 @@
+[
+  {
+    "name": "tank_sim_opcua",
+    "protocol": "OPC-UA",
+    "config": {
+      "server": {
+        "name": "OpenPLC Tank Simulator",
+        "application_uri": "urn:openplc:tank_sim",
+        "product_uri": "urn:openplc:runtime:tank_sim",
+        "endpoint_url": "opc.tcp://0.0.0.0:4840/openplc/tank",
+        "security_profiles": [
+          {
+            "name": "insecure",
+            "enabled": true,
+            "security_policy": "None",
+            "security_mode": "None",
+            "auth_methods": ["Anonymous", "Username"]
+          }
+        ]
+      },
+      "security": {
+        "server_certificate_strategy": "auto_self_signed",
+        "trusted_client_certificates": []
+      },
+      "users": [
+        {
+          "type": "password",
+          "username": "operator",
+          "password_hash": "$2b$12$iglF9onJQ6S0fsE.sWHQOuIgDfInlWVnUjFmDCWakFTSwgQ7da2bG",
+          "role": "operator"
+        }
+      ],
+      "cycle_time_ms": 100,
+      "address_space": {
+        "namespace_uri": "urn:openplc:tank_sim",
+        "variables": [
+          {
+            "node_id": "PLC.Tank.heartbeat",
+            "browse_name": "heartbeat",
+            "display_name": "Heartbeat",
+            "datatype": "BOOL",
+            "initial_value": false,
+            "description": "PLC alive signal (toggles ~1 Hz)",
+            "index": 0,
+            "permissions": {"viewer": "r", "operator": "r", "engineer": "r"}
+          },
+          {
+            "node_id": "PLC.Tank.inlet_valve",
+            "browse_name": "inlet_valve",
+            "display_name": "Inlet Valve",
+            "datatype": "BOOL",
+            "initial_value": false,
+            "description": "Operator-controlled fill valve",
+            "index": 1,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Tank.outlet_pump",
+            "browse_name": "outlet_pump",
+            "display_name": "Outlet Pump",
+            "datatype": "BOOL",
+            "initial_value": false,
+            "description": "Operator-controlled drain pump",
+            "index": 2,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Tank.level_high_alarm",
+            "browse_name": "level_high_alarm",
+            "display_name": "High-Level Alarm",
+            "datatype": "BOOL",
+            "initial_value": false,
+            "description": "Level > 80 %",
+            "index": 3,
+            "permissions": {"viewer": "r", "operator": "r", "engineer": "r"}
+          },
+          {
+            "node_id": "PLC.Tank.level_low_alarm",
+            "browse_name": "level_low_alarm",
+            "display_name": "Low-Level Alarm",
+            "datatype": "BOOL",
+            "initial_value": true,
+            "description": "Level < 20 %",
+            "index": 4,
+            "permissions": {"viewer": "r", "operator": "r", "engineer": "r"}
+          },
+          {
+            "node_id": "PLC.Tank.tank_level",
+            "browse_name": "tank_level",
+            "display_name": "Tank Level",
+            "datatype": "REAL",
+            "initial_value": 0.0,
+            "description": "Tank fill level (0-100 %)",
+            "index": 5,
+            "permissions": {"viewer": "r", "operator": "r", "engineer": "rw"}
+          },
+          {
+            "node_id": "PLC.Tank.pump_run_count",
+            "browse_name": "pump_run_count",
+            "display_name": "Pump Run Count",
+            "datatype": "DINT",
+            "initial_value": 0,
+            "description": "Rising-edge count on outlet pump",
+            "index": 6,
+            "permissions": {"viewer": "r", "operator": "r", "engineer": "rw"}
+          }
+        ],
+        "structures": [],
+        "arrays": []
+      }
+    }
+  }
+]

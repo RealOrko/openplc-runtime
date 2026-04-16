@@ -172,3 +172,51 @@ class RuntimeClient:
         raise TimeoutError(
             f"Compilation did not finish within {COMPILE_TIMEOUT_S}s"
         )
+
+    # ---- Observability helpers ---------------------------------------------
+
+    def plc_status(self, include_stats: bool = True) -> dict:
+        params = {"include_stats": "true"} if include_stats else None
+        resp = self._request(
+            "GET",
+            "/api/status",
+            headers=self._headers,
+            params=params,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def compilation_status(self) -> dict:
+        resp = self._request(
+            "GET",
+            "/api/compilation-status",
+            headers=self._headers,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def runtime_logs(self, since_id: int | None = None, level: str | None = None) -> list:
+        params = {}
+        if since_id is not None:
+            params["id"] = since_id
+        if level is not None:
+            params["level"] = level
+        resp = self._request(
+            "GET",
+            "/api/runtime-logs",
+            headers=self._headers,
+            params=params or None,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        return body.get("runtime-logs", []) or []
+
+    def start_plc(self) -> dict:
+        resp = self._request("GET", "/api/start-plc", headers=self._headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    def stop_plc(self) -> dict:
+        resp = self._request("GET", "/api/stop-plc", headers=self._headers)
+        resp.raise_for_status()
+        return resp.json()

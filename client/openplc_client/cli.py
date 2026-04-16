@@ -13,10 +13,13 @@ import json
 import sys
 from pathlib import Path
 
+import time
+
 from openplc_client.binaries import CLIENT_ROOT, detect_host, ensure_binaries
 from openplc_client.packager import zip_staging
 from openplc_client.toolchain import build_src_tree
 from openplc_client.uploader import RuntimeClient
+from openplc_client.watcher import watch_model
 
 DEFAULT_RUNTIME_URL = "https://localhost:8443"
 DEFAULT_USERNAME = "openplc"
@@ -87,6 +90,88 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
     return 0
 
 
+def _make_client(args: argparse.Namespace) -> RuntimeClient:
+    runtime_url = args.runtime or DEFAULT_RUNTIME_URL
+    username = args.username or DEFAULT_USERNAME
+    password = args.password or DEFAULT_PASSWORD
+    client = RuntimeClient(base_url=runtime_url, username=username, password=password)
+    client.ensure_authenticated()
+    return client
+
+
+def _cmd_status(args: argparse.Namespace) -> int:
+    client = _make_client(args)
+    status = client.plc_status(include_stats=True)
+    compile_status = client.compilation_status()
+
+    plc_state = status.get("status", "?")
+    print(f"runtime : {args.runtime or DEFAULT_RUNTIME_URL}")
+    print(f"plc     : {plc_state}")
+    stats = status.get("timing_stats")
+    if stats:
+        print("timing  :")
+        for k, v in stats.items():
+            print(f"  {k:<28s} {v}")
+
+    print(f"build   : {compile_status.get('status', '?')} "
+          f"(exit_code={compile_status.get('exit_code')})")
+    logs = compile_status.get("logs", [])
+    if logs:
+        print("  last 5 build log lines:")
+        for line in logs[-5:]:
+            print(f"    {line.rstrip()}")
+    return 0
+
+
+def _cmd_logs(args: argparse.Namespace) -> int:
+    client = _make_client(args)
+    since = 0
+    if args.follow:
+        print("[logs] following runtime logs; Ctrl-C to stop")
+        try:
+            while True:
+                entries = client.runtime_logs(since_id=since, level=args.level)
+                for e in entries:
+                    since = max(since, int(e.get("id", since)))
+                    _print_log_entry(e)
+                time.sleep(1.0)
+        except KeyboardInterrupt:
+            print()
+            return 0
+    else:
+        for e in client.runtime_logs(level=args.level):
+            _print_log_entry(e)
+        return 0
+
+
+def _print_log_entry(e: dict) -> None:
+    if not isinstance(e, dict):
+        print(str(e))
+        return
+    level = e.get("level", "?")
+    ts = e.get("timestamp") or e.get("time") or ""
+    msg = e.get("message") or e.get("msg") or ""
+    print(f"{ts} [{level}] {msg}")
+
+
+def _cmd_start(args: argparse.Namespace) -> int:
+    client = _make_client(args)
+    print(client.start_plc())
+    return 0
+
+
+def _cmd_stop(args: argparse.Namespace) -> int:
+    client = _make_client(args)
+    print(client.stop_plc())
+    return 0
+
+
+def _cmd_watch(args: argparse.Namespace) -> int:
+    model_dir = _resolve_model(args.model)
+    runtime_url = args.runtime or DEFAULT_RUNTIME_URL
+    return watch_model(model_dir, runtime_url, prefer=args.via)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m openplc_client",
@@ -108,6 +193,36 @@ def _build_parser() -> argparse.ArgumentParser:
     p_deploy.add_argument("--username", help=f"Runtime username (default {DEFAULT_USERNAME})")
     p_deploy.add_argument("--password", help=f"Runtime password (default {DEFAULT_PASSWORD})")
     p_deploy.set_defaults(func=_cmd_deploy)
+
+    def _add_auth(sp: argparse.ArgumentParser) -> None:
+        sp.add_argument("--runtime", help=f"Runtime base URL (default {DEFAULT_RUNTIME_URL})")
+        sp.add_argument("--username", help=f"Runtime username (default {DEFAULT_USERNAME})")
+        sp.add_argument("--password", help=f"Runtime password (default {DEFAULT_PASSWORD})")
+
+    p_status = sub.add_parser("status", help="Print PLC runtime state and last build status")
+    _add_auth(p_status)
+    p_status.set_defaults(func=_cmd_status)
+
+    p_logs = sub.add_parser("logs", help="Dump runtime log buffer")
+    _add_auth(p_logs)
+    p_logs.add_argument("--follow", "-f", action="store_true", help="Tail new log entries")
+    p_logs.add_argument("--level", help="Filter by level (e.g. error, warn, info)")
+    p_logs.set_defaults(func=_cmd_logs)
+
+    p_start = sub.add_parser("start", help="Start the PLC program")
+    _add_auth(p_start)
+    p_start.set_defaults(func=_cmd_start)
+
+    p_stop = sub.add_parser("stop", help="Stop the PLC program")
+    _add_auth(p_stop)
+    p_stop.set_defaults(func=_cmd_stop)
+
+    p_watch = sub.add_parser("watch", help="Live view of a model's variables (OPC-UA or Modbus)")
+    p_watch.add_argument("model", help="Path to a model folder")
+    p_watch.add_argument("--via", choices=["auto", "opcua", "modbus"], default="auto",
+                         help="Protocol to use (default auto — OPC-UA if configured)")
+    p_watch.add_argument("--runtime", help=f"Runtime base URL (default {DEFAULT_RUNTIME_URL})")
+    p_watch.set_defaults(func=_cmd_watch)
 
     return parser
 
