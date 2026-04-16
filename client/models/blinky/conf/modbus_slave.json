@@ -1,0 +1,22 @@
+{
+  "network_configuration": {
+    "host": "0.0.0.0",
+    "port": 5020
+  },
+  "holding_registers": {
+    "qw_count": 16,
+    "mw_count": 16,
+    "md_count": 8,
+    "ml_count": 4
+  },
+  "coils": {
+    "qx_bits": 16,
+    "mx_bits": 0
+  },
+  "discrete_inputs": {
+    "ix_bits": 16
+  },
+  "input_registers": {
+    "iw_count": 16
+  }
+}
