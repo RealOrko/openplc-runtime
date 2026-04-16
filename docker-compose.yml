@@ -8,14 +8,22 @@ services:
     container_name: openplc-runtime
     restart: unless-stopped
 
-    # Published ports:
-    #   8443 - REST API / OpenPLC Editor connection (always required)
-    #   5020 - Modbus TCP Slave (map to host 502 if you need the standard port)
-    #   4840 - OPC UA Server
-    ports:
-      - "8443:8443"
-      - "5020:5020"
-      - "4840:4840"
+    # Host networking: the runtime binds the REST API on
+    # ${RUNTIME_REST_PORT} (default 18443), OPC-UA on the port from the
+    # deployed model's conf/opcua.json (default 14840 for water_plant), and
+    # Modbus on the port from conf/modbus_slave.json (default 15020).
+    # Ports shift by +10000 from the upstream defaults (8443/4840/5020) so
+    # both ports and their -10000 equivalents are free for other services
+    # on the host.
+    network_mode: host
+
+    environment:
+      # REST API port for the webserver (reads from this env var, defaults
+      # to 8443 when unset for backward compatibility).
+      RUNTIME_REST_PORT: "18443"
+      # Host IP for the healthcheck and any outgoing connections. Leave
+      # empty to auto-detect via `hostname -I` inside the container.
+      HOST_IP: "${HOST_IP:-}"
 
     # Capabilities required by the real-time runtime:
     #   SYS_NICE  - sched_setscheduler(SCHED_FIFO) in core/src/plc_app/utils/utils.c
@@ -32,20 +40,46 @@ services:
     volumes:
       # Persists .env, restapi.db (user accounts), and runtime sockets
       - openplc-runtime-data:/var/run/runtime
-      # Optional: mount a pre-configured plugin list to have plugins enabled at boot.
-      # Copy plugins.conf.docker to plugins.conf and edit to taste.
-      # - ./plugins.conf.docker:/workdir/plugins.conf:ro
 
     healthcheck:
       test:
         - "CMD"
         - "python3"
         - "-c"
-        - "import ssl,socket;s=socket.create_connection(('127.0.0.1',8443),timeout=5);ssl._create_unverified_context().wrap_socket(s,server_hostname='localhost').close()"
+        - |
+          import os, ssl, socket, subprocess
+          h = os.environ.get('HOST_IP') or subprocess.check_output(['hostname','-I']).decode().split()[0]
+          p = int(os.environ.get('RUNTIME_REST_PORT', '18443'))
+          s = socket.create_connection((h, p), timeout=5)
+          ssl._create_unverified_context().wrap_socket(s, server_hostname=h).close()
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 45s
+
+  water-plant-sim:
+    # Simulator container: waits for the runtime to be ready, deploys the
+    # water_plant model via openplc_client, then runs the HMI simulator
+    # that drives realistic operator traffic over OPC-UA. Both deploy and
+    # HMI use $HOST_IP rather than 127.0.0.1 so the sim is exercising the
+    # runtime exactly as an external client would.
+    build:
+      context: .
+      dockerfile: Dockerfile.sim
+    image: water-plant-sim:local
+    container_name: water-plant-sim
+    restart: unless-stopped
+
+    network_mode: host
+
+    environment:
+      RUNTIME_REST_PORT: "18443"
+      HOST_IP: "${HOST_IP:-}"
+      MODEL_DIR: "/app/client/models/water_plant"
+
+    depends_on:
+      openplc-runtime:
+        condition: service_healthy
 
 volumes:
   openplc-runtime-data:

@@ -337,7 +337,7 @@ def run_https():
             app_restapi,
             debug=False,
             host="0.0.0.0",
-            port=8443,
+            port=int(os.environ.get("RUNTIME_REST_PORT", 8443)),
             ssl_context=context,
             use_reloader=False,
             log_output=False,

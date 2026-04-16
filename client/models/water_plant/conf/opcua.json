@@ -7,14 +7,15 @@
         "name": "OpenPLC Water Treatment Plant",
         "application_uri": "urn:openplc:water_plant",
         "product_uri": "urn:openplc:runtime:water_plant",
-        "endpoint_url": "opc.tcp://0.0.0.0:4840/openplc/water_plant",
+        "endpoint_url": "opc.tcp://0.0.0.0:14840/openplc/water_plant",
         "security_profiles": [
           {
             "name": "insecure",
             "enabled": true,
             "security_policy": "None",
             "security_mode": "None",
-            "auth_methods": ["Anonymous", "Username"]
+            "auth_methods": ["Anonymous", "Username"],
+            "anonymous_role": "operator"
           }
         ]
       },

@@ -1,0 +1,38 @@
+# syntax=docker/dockerfile:1
+#
+# Simulator container. Waits for the runtime to be reachable on
+# $HOST_IP:$RUNTIME_REST_PORT, deploys $MODEL_DIR via openplc_client,
+# then execs the model's HMI simulator. Runs under docker host networking
+# so it reaches the runtime's OPC-UA/Modbus endpoints on the same host.
+
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        iproute2 \
+        unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the headless client + models. The water_plant model is the default
+# deployment target; MODEL_DIR can be overridden at runtime to deploy a
+# different model from client/models/.
+COPY client/ /app/client/
+
+WORKDIR /app/client
+
+# The openplc_client package sits at /app/client/openplc_client — working
+# from /app/client makes `python -m openplc_client ...` import cleanly
+# without needing PYTHONPATH.
+RUN pip install --no-cache-dir -r requirements.txt asyncua \
+    && python -m openplc_client setup
+
+COPY docker-entrypoint.sim.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+# Runtime-configurable via docker-compose `environment:`
+ENV MODEL_DIR=/app/client/models/water_plant \
+    RUNTIME_REST_PORT=18443 \
+    PYTHONPATH=/app/client
+
+ENTRYPOINT ["/app/entrypoint.sh"]

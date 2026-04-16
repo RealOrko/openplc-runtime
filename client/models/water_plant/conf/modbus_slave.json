@@ -1,7 +1,7 @@
 {
   "network_configuration": {
     "host": "0.0.0.0",
-    "port": 5020
+    "port": 15020
   },
   "buffer_mapping": {
     "holding_registers": {
