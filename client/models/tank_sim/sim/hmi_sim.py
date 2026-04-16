@@ -1,95 +1,58 @@
 """Headless HMI simulator for the tank_sim model.
 
-Connects to the OpenPLC runtime's OPC-UA server (Anonymous auth), watches
-the tank state, periodically drives the inlet valve and outlet pump to
-simulate operator activity, and force-closes the valve if the high-level
+Connects to the OpenPLC runtime's OPC-UA server as the configured operator,
+watches the tank state, periodically drives the inlet valve and outlet pump
+to simulate operator activity, and force-closes the valve if the high-level
 alarm fires.
 
 Run after `openplc_client deploy ./models/tank_sim`:
 
     pip install -r requirements.txt
-    python hmi_sim.py [--endpoint opc.tcp://localhost:4840/openplc/tank]
+    python hmi_sim.py [--host localhost]
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import signal
-from dataclasses import dataclass
+import sys
+from pathlib import Path
 
-from asyncua import Client, ua
+# Make the client package importable when running this script directly from
+# the sim/ folder inside the model.
+_CLIENT_ROOT = Path(__file__).resolve().parents[3]
+if str(_CLIENT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_CLIENT_ROOT))
 
-DEFAULT_ENDPOINT = "opc.tcp://localhost:4840/openplc/tank"
-NAMESPACE = "urn:openplc:tank_sim"
-DEFAULT_USERNAME = "operator"
-DEFAULT_PASSWORD = "operator"
+from openplc_client.model_client import connect  # noqa: E402
+
+MODEL_DIR = Path(__file__).resolve().parents[1]
 
 PRINT_INTERVAL_S = 1.7          # avoid aliasing with the ~500 ms heartbeat
 VALVE_TOGGLE_S = 10.0
 PUMP_TOGGLE_S = 15.0
 
 
-@dataclass
-class TankNodes:
-    heartbeat: object
-    inlet_valve: object
-    outlet_pump: object
-    level_high_alarm: object
-    level_low_alarm: object
-    tank_level: object
-    pump_run_count: object
-
-
-async def _resolve_nodes(client: Client) -> TankNodes:
-    """The OPC-UA plugin flattens every configured variable as a direct
-    child of `Objects`, keyed by browse_name — the dotted node_id in the
-    JSON is only a label, not a hierarchy."""
-    ns = await client.get_namespace_index(NAMESPACE)
-    objects = client.nodes.objects
-
-    async def find(browse_name: str) -> object:
-        return await objects.get_child([f"{ns}:{browse_name}"])
-
-    return TankNodes(
-        heartbeat=await find("heartbeat"),
-        inlet_valve=await find("inlet_valve"),
-        outlet_pump=await find("outlet_pump"),
-        level_high_alarm=await find("level_high_alarm"),
-        level_low_alarm=await find("level_low_alarm"),
-        tank_level=await find("tank_level"),
-        pump_run_count=await find("pump_run_count"),
-    )
-
-
-async def _write_bool(node, value: bool) -> None:
-    await node.write_value(ua.DataValue(ua.Variant(value, ua.VariantType.Boolean)))
-
-
-async def _print_loop(nodes: TankNodes, stop: asyncio.Event) -> None:
+async def _print_loop(m, stop: asyncio.Event) -> None:
     while not stop.is_set():
-        level = await nodes.tank_level.read_value()
-        valve = await nodes.inlet_valve.read_value()
-        pump = await nodes.outlet_pump.read_value()
-        high = await nodes.level_high_alarm.read_value()
-        low = await nodes.level_low_alarm.read_value()
-        count = await nodes.pump_run_count.read_value()
-        hb = await nodes.heartbeat.read_value()
-
+        snap = await m.snapshot(
+            "heartbeat", "inlet_valve", "outlet_pump",
+            "level_high_alarm", "level_low_alarm",
+            "tank_level", "pump_run_count",
+        )
         alarms = []
-        if high:
+        if snap["level_high_alarm"]:
             alarms.append("HIGH")
-        if low:
+        if snap["level_low_alarm"]:
             alarms.append("LOW")
-        alarm_str = ",".join(alarms) if alarms else "-"
-        hb_str = "O" if hb else "."
-
         print(
-            f"[hmi] hb={hb_str}  level={level:5.1f}%  "
-            f"valve={'open ' if valve else 'shut '}  "
-            f"pump={'on ' if pump else 'off'}  "
-            f"runs={count:<4d}  alarm={alarm_str}",
+            f"[hmi] hb={'O' if snap['heartbeat'] else '.'}  "
+            f"level={snap['tank_level']:5.1f}%  "
+            f"valve={'open ' if snap['inlet_valve'] else 'shut '}  "
+            f"pump={'on ' if snap['outlet_pump'] else 'off'}  "
+            f"runs={snap['pump_run_count']:<4d}  "
+            f"alarm={','.join(alarms) if alarms else '-'}",
             flush=True,
         )
         try:
@@ -98,7 +61,7 @@ async def _print_loop(nodes: TankNodes, stop: asyncio.Event) -> None:
             pass
 
 
-async def _valve_loop(nodes: TankNodes, stop: asyncio.Event) -> None:
+async def _valve_loop(m, stop: asyncio.Event) -> None:
     open_valve = False
     while not stop.is_set():
         try:
@@ -107,21 +70,19 @@ async def _valve_loop(nodes: TankNodes, stop: asyncio.Event) -> None:
         except asyncio.TimeoutError:
             pass
 
-        # Safety: never open the valve while the high alarm is active
-        high = await nodes.level_high_alarm.read_value()
-        if high:
+        if await m.read("level_high_alarm"):
             if open_valve:
                 open_valve = False
-                await _write_bool(nodes.inlet_valve, False)
+                await m.write("inlet_valve", False)
                 print("[hmi] high alarm: forcing inlet valve CLOSED", flush=True)
             continue
 
         open_valve = not open_valve
-        await _write_bool(nodes.inlet_valve, open_valve)
+        await m.write("inlet_valve", open_valve)
         print(f"[hmi] inlet_valve -> {'OPEN' if open_valve else 'SHUT'}", flush=True)
 
 
-async def _pump_loop(nodes: TankNodes, stop: asyncio.Event) -> None:
+async def _pump_loop(m, stop: asyncio.Event) -> None:
     pump_on = False
     while not stop.is_set():
         try:
@@ -130,45 +91,35 @@ async def _pump_loop(nodes: TankNodes, stop: asyncio.Event) -> None:
         except asyncio.TimeoutError:
             pass
         pump_on = not pump_on
-        await _write_bool(nodes.outlet_pump, pump_on)
+        await m.write("outlet_pump", pump_on)
         print(f"[hmi] outlet_pump -> {'ON' if pump_on else 'OFF'}", flush=True)
 
 
-async def run(endpoint: str, username: str, password: str) -> None:
+async def run(host: str) -> None:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
-        with contextlib.suppress(NotImplementedError):
+        try:
             loop.add_signal_handler(sig, stop.set)
+        except NotImplementedError:
+            pass
 
-    print(f"[hmi] connecting to {endpoint} as '{username}'")
-    client = Client(url=endpoint)
-    client.set_user(username)
-    client.set_password(password)
-    await client.connect()
-    try:
-        nodes = await _resolve_nodes(client)
-        print("[hmi] connected; driving valve/pump to simulate operator activity")
+    async with connect(MODEL_DIR, host=host) as m:
+        print(f"[hmi] connected to {m.endpoint_url}; "
+              f"driving valve/pump to simulate operator activity", flush=True)
         await asyncio.gather(
-            _print_loop(nodes, stop),
-            _valve_loop(nodes, stop),
-            _pump_loop(nodes, stop),
+            _print_loop(m, stop),
+            _valve_loop(m, stop),
+            _pump_loop(m, stop),
         )
-    finally:
-        await client.disconnect()
-        print("[hmi] disconnected")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT,
-                        help=f"OPC-UA endpoint URL (default {DEFAULT_ENDPOINT})")
-    parser.add_argument("--username", default=DEFAULT_USERNAME,
-                        help=f"OPC-UA username (default {DEFAULT_USERNAME})")
-    parser.add_argument("--password", default=DEFAULT_PASSWORD,
-                        help="OPC-UA password")
+    parser.add_argument("--host", default="localhost",
+                        help="Hostname of the runtime (default localhost)")
     args = parser.parse_args()
-    asyncio.run(run(args.endpoint, args.username, args.password))
+    asyncio.run(run(args.host))
 
 
 if __name__ == "__main__":

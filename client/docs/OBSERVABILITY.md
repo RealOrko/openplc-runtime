@@ -18,6 +18,9 @@ runtime auto-creates the `openplc/openplc` admin. Override with
 | `start` / `stop` | Start or stop the PLC program via the REST API |
 | `watch <model>` | Live table of the model's variables polled via OPC-UA or Modbus |
 | `watch <model> --via modbus` | Force Modbus even if `conf/opcua.json` exists |
+| `browse <model>` | One-shot read of every OPC-UA variable with current value |
+| `poke <model> <name> <value>` | One-shot write (accepts `true`/`false`, int, float) |
+| `sync-opcua <model>` | Rewrite `conf/opcua.json` `index` fields from the last-built `debug.c` |
 
 Examples:
 
@@ -28,6 +31,9 @@ python -m openplc_client status
 python -m openplc_client logs --follow --level warn
 python -m openplc_client watch ./models/tank_sim                # OPC-UA
 python -m openplc_client watch ./models/blinky --via modbus     # Modbus
+python -m openplc_client browse ./models/tank_sim               # one-shot dump
+python -m openplc_client poke ./models/tank_sim inlet_valve true
+python -m openplc_client sync-opcua ./models/tank_sim           # fix stale indices
 python -m openplc_client stop
 python -m openplc_client start
 ```
@@ -132,15 +138,40 @@ cd /home/gavin/code/openplc-runtime
 docker compose logs -f openplc-runtime
 ```
 
+## How the runtime's OPC-UA plugin lays out nodes
+
+Worth knowing if you write your own OPC-UA clients against the runtime.
+
+The plugin places **every variable as a direct child of `Objects`**, keyed
+by `browse_name`. The dotted `node_id` in `conf/opcua.json` (e.g.
+`"PLC.Tank.heartbeat"`) is treated as a label, not a path — it doesn't
+create a folder hierarchy. Only the leaf matters for resolution.
+
+That means a raw asyncua lookup looks like this — **not** a dotted walk:
+
+```python
+ns = await client.get_namespace_index("urn:openplc:tank_sim")
+node = await client.nodes.objects.get_child([f"{ns}:heartbeat"])
+```
+
+`openplc_client.model_client.connect()` hides this entirely. Prefer it
+over writing resolution logic by hand:
+
+```python
+async with connect("./models/tank_sim") as m:
+    value = await m.read("heartbeat")
+```
+
 ## Gotchas
 
 - **JWT expiry** — the runtime issues JWTs with a fixed lifetime; if
   `status` starts returning 401 after a long-running session, re-run the
   command and the client will log in again.
 - **OPC-UA `index` drift** — `conf/opcua.json` references debug variables
-  by position in `debug.c`'s `debug_vars[]`. If you edit the ST program
-  and reorder declarations, rebuild and check the new `debug.c` to keep
-  the indices in sync (`build/<model>/src/debug.c`).
+  by position in `debug.c`'s `debug_vars[]`. Reordering or adding ST
+  variables silently invalidates the config. `build` warns on mismatch;
+  `sync-opcua` rewrites the indices in place from the last built
+  `debug.c`.
 - **"status: EMPTY"** — the runtime is up but no `.so` has been loaded.
   Run `deploy` to push a program.
 - **`watch` hangs on connect** — the plugin needs time to spin up after a

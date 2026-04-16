@@ -1,163 +1,115 @@
-"""Model-driven live watch: reads a model's conf/*.json and polls the
-matching plugin (OPC-UA preferred, Modbus fallback) so you can see variable
-values change in the terminal.
+"""Model-driven live watch. OPC-UA goes through model_client (which hides
+the browse_name-vs-node_id gotcha); Modbus stays as a raw coil/register
+dump since the IEC→Modbus address mapping isn't encoded in conf/.
 
-Optional dependencies — imported lazily so the rest of openplc_client works
-without them:
-    asyncua   (for OPC-UA)
-    pymodbus  (for Modbus)
+Optional dependencies imported lazily:
+    asyncua   (OPC-UA)
+    pymodbus  (Modbus)
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import signal
 import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from openplc_client.model_client import (
+    ModbusModelClient,
+    connect,
+)
+
 POLL_INTERVAL_S = 1.0
 
 
-def _format_row(name: str, value: Any, datatype: str | None = None) -> str:
+def _format_value(value: Any, datatype: str | None = None) -> str:
     if isinstance(value, float):
-        rendered = f"{value:10.3f}"
-    elif isinstance(value, bool):
-        rendered = "True " if value else "False"
-    elif value is None:
-        rendered = "?"
-    else:
-        rendered = str(value)
-    type_str = f" [{datatype}]" if datatype else ""
-    return f"  {name:<24s} {rendered}{type_str}"
+        return f"{value:10.3f}"
+    if isinstance(value, bool):
+        return "True " if value else "False"
+    if value is None:
+        return "?"
+    return str(value)
 
 
-def _load_opcua_config(model_dir: Path) -> dict | None:
-    path = model_dir / "conf" / "opcua.json"
-    if not path.is_file():
-        return None
-    data = json.loads(path.read_text())
-    if isinstance(data, list):
-        if not data:
-            return None
-        data = data[0].get("config", data[0])
-    return data
-
-
-def _load_modbus_config(model_dir: Path) -> dict | None:
-    path = model_dir / "conf" / "modbus_slave.json"
-    if not path.is_file():
-        return None
-    return json.loads(path.read_text())
-
-
-async def _watch_opcua(model_dir: Path, runtime_host: str) -> int:
+async def _watch_opcua(model_dir: Path, host: str) -> int:
     try:
-        from asyncua import Client
+        import asyncua  # noqa: F401
     except ImportError:
         print("ERROR: asyncua is required for OPC-UA watch. Install with "
-              "`pip install asyncua` or run from the model's sim/ folder.")
+              "`pip install asyncua`.")
         return 2
 
-    cfg = _load_opcua_config(model_dir)
-    if cfg is None:
-        return 1
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except NotImplementedError:
+            pass
 
-    endpoint_url = cfg["server"]["endpoint_url"]
-    # Rewrite 0.0.0.0 in the config to the host we're actually connecting to
-    parsed = urlparse(endpoint_url)
-    if parsed.hostname in ("0.0.0.0", None):
-        endpoint_url = endpoint_url.replace("0.0.0.0", runtime_host, 1)
-
-    namespace_uri = cfg["address_space"]["namespace_uri"]
-    variables = cfg["address_space"]["variables"]
-
-    print(f"[watch] connecting to {endpoint_url}")
-    client = Client(url=endpoint_url)
-    await client.connect()
-    try:
-        ns = await client.get_namespace_index(namespace_uri)
-        node_map = {}
-        for var in variables:
-            # The OPC-UA plugin places every variable as a direct child of
-            # Objects, keyed by browse_name. The dotted node_id is a label
-            # only, not a hierarchy.
-            node = await client.nodes.objects.get_child([f"{ns}:{var['browse_name']}"])
-            node_map[var["browse_name"]] = (node, var["datatype"])
-
-        print(f"[watch] {len(node_map)} variables; Ctrl-C to stop")
-        stop = asyncio.Event()
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
-                loop.add_signal_handler(sig, stop.set)
-            except NotImplementedError:
-                pass
-
+    async with connect(model_dir, host=host) as m:
+        print(f"[watch] connected to {m.endpoint_url}; "
+              f"{len(m.variables)} variables; Ctrl-C to stop")
         while not stop.is_set():
             print(f"--- {time.strftime('%H:%M:%S')} ---")
-            for name, (node, dtype) in node_map.items():
-                try:
-                    value = await node.read_value()
-                except Exception as e:
-                    value = f"<err: {e}>"
-                print(_format_row(name, value, dtype))
+            snap = await m.snapshot()
+            for name, value in snap.items():
+                dtype = m[name].datatype
+                print(f"  {name:<24s} {_format_value(value, dtype)} [{dtype}]")
             try:
                 await asyncio.wait_for(stop.wait(), timeout=POLL_INTERVAL_S)
             except asyncio.TimeoutError:
                 pass
-    finally:
-        await client.disconnect()
     return 0
 
 
-def _watch_modbus(model_dir: Path, runtime_host: str) -> int:
+def _watch_modbus(model_dir: Path, host: str) -> int:
     try:
-        from pymodbus.client import ModbusTcpClient
+        import pymodbus  # noqa: F401
     except ImportError:
         print("ERROR: pymodbus is required for Modbus watch. Install with "
               "`pip install pymodbus`.")
         return 2
 
-    cfg = _load_modbus_config(model_dir)
-    if cfg is None:
+    try:
+        m = ModbusModelClient(model_dir, host=host)
+        m.connect()
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}")
+        return 1
+    except ConnectionError as e:
+        print(f"ERROR: {e}")
         return 1
 
-    port = int(cfg.get("network_configuration", {}).get("port", 5020))
-    coils = int(cfg.get("coils", {}).get("qx_bits", 16))
-    holding = int(cfg.get("holding_registers", {}).get("qw_count", 16))
-
-    client = ModbusTcpClient(runtime_host, port=port, timeout=2)
-    if not client.connect():
-        print(f"ERROR: cannot connect to Modbus at {runtime_host}:{port}")
-        return 1
-    print(f"[watch] connected to modbus {runtime_host}:{port}; Ctrl-C to stop")
+    print(f"[watch] connected to modbus {host}; Ctrl-C to stop")
     try:
         while True:
             print(f"--- {time.strftime('%H:%M:%S')} ---")
-            if coils > 0:
-                resp = client.read_coils(0, count=coils)
-                if not resp.isError():
-                    bits = " ".join("1" if b else "0" for b in resp.bits[:coils])
-                    print(f"  coils[0..{coils-1}]       {bits}")
-            if holding > 0:
-                resp = client.read_holding_registers(0, count=holding)
-                if not resp.isError():
-                    vals = " ".join(f"{v:5d}" for v in resp.registers[:holding])
-                    print(f"  holding[0..{holding-1}]   {vals}")
+            try:
+                coils = m.read_coils()
+                bits = " ".join("1" if b else "0" for b in coils)
+                print(f"  coils[0..{len(coils)-1}]     {bits}")
+            except RuntimeError as e:
+                print(f"  coils read error: {e}")
+            try:
+                regs = m.read_holding()
+                vals = " ".join(f"{v:5d}" for v in regs)
+                print(f"  holding[0..{len(regs)-1}]   {vals}")
+            except RuntimeError as e:
+                print(f"  holding read error: {e}")
             time.sleep(POLL_INTERVAL_S)
     except KeyboardInterrupt:
         pass
     finally:
-        client.close()
+        m.close()
     return 0
 
 
 def watch_model(model_dir: Path, runtime_url: str, prefer: str = "auto") -> int:
-    parsed = urlparse(runtime_url)
-    host = parsed.hostname or "localhost"
+    host = urlparse(runtime_url).hostname or "localhost"
 
     has_opcua = (model_dir / "conf" / "opcua.json").is_file()
     has_modbus = (model_dir / "conf" / "modbus_slave.json").is_file()

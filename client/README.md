@@ -95,6 +95,55 @@ python -m openplc_client deploy ./models/blinky \
 9. Poll `GET /api/compilation-status` until `SUCCESS` or `FAILED`, streaming
    the runtime's gcc logs.
 
+## Scripting against a deployed model
+
+`openplc_client.model_client` gives you a model-scoped async client that
+pre-resolves every OPC-UA variable by `browse_name` — the only lookup key
+the runtime's OPC-UA plugin actually honors (see
+`docs/OBSERVABILITY.md` for background on that quirk).
+
+```python
+import asyncio
+from openplc_client.model_client import connect
+
+async def main():
+    async with connect("./models/tank_sim", host="localhost") as m:
+        # Snapshot the whole model in one shot
+        print(await m.snapshot())
+
+        # Or reach individual variables
+        level = await m.read("tank_level")
+        await m.write("inlet_valve", True)
+
+        # Live polling
+        async for snap in m.poll("tank_level", "level_high_alarm", period=0.5):
+            print(snap["tank_level"], snap["level_high_alarm"])
+
+asyncio.run(main())
+```
+
+Credential precedence: explicit `username=` / `password=` args beat the
+"single password user in conf/opcua.json" convention, which beats
+Anonymous. For Modbus-only models, use `ModbusModelClient` from the same
+module.
+
+## Keeping `conf/opcua.json` in sync
+
+The OPC-UA plugin identifies PLC variables by their position in
+`debug.c`'s `debug_vars[]` array (the `index` field). Reordering or adding
+ST variables reshuffles those positions and silently invalidates the
+config.
+
+`build` warns if it detects a mismatch. To fix:
+
+```bash
+python -m openplc_client sync-opcua ./models/tank_sim
+```
+
+`sync-opcua` parses the last-built `debug.c`, matches configured
+`browse_name`s to IEC symbols' trailing identifiers (case-insensitive),
+and rewrites the `index` fields in place.
+
 ## Troubleshooting
 
 - **"Binary not found: iec2c"** — run `python -m openplc_client setup` first.

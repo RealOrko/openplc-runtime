@@ -13,9 +13,12 @@ import json
 import sys
 from pathlib import Path
 
+import asyncio
 import time
+from urllib.parse import urlparse
 
 from openplc_client.binaries import CLIENT_ROOT, detect_host, ensure_binaries
+from openplc_client.opcua_gen import compute_index_changes, sync_opcua_json
 from openplc_client.packager import zip_staging
 from openplc_client.toolchain import build_src_tree
 from openplc_client.uploader import RuntimeClient
@@ -55,10 +58,34 @@ def _build(model_dir: Path) -> Path:
     output_zip = BUILD_ROOT / f"{model_dir.name}.zip"
     print(f"[build] model={model_dir.name} staging={staging}")
     build_src_tree(model_dir, staging, target)
+    _warn_stale_opcua_indices(model_dir, staging)
     zip_staging(staging, output_zip)
     size_kb = output_zip.stat().st_size / 1024
     print(f"[build] wrote {output_zip} ({size_kb:.1f} KB)")
     return output_zip
+
+
+def _warn_stale_opcua_indices(model_dir: Path, staging: Path) -> None:
+    """If the model has an opcua.json whose indices don't match the
+    freshly-generated debug.c, print a warning."""
+    if not (model_dir / "conf" / "opcua.json").is_file():
+        return
+    try:
+        result = compute_index_changes(model_dir, build_dir=staging)
+    except (FileNotFoundError, ValueError):
+        return
+
+    if result.updated:
+        print("[build] WARNING: conf/opcua.json indices are stale:")
+        for name, (old, new) in result.updated.items():
+            print(f"         {name}: index {old} -> {new}")
+        print("         Run `python -m openplc_client sync-opcua "
+              f"{model_dir}` to rewrite the config.")
+    if result.missing_from_debug:
+        print("[build] WARNING: these variables in conf/opcua.json are not "
+              "in the compiled debug.c:")
+        for name in result.missing_from_debug:
+            print(f"         {name}")
 
 
 def _cmd_setup(args: argparse.Namespace) -> int:
@@ -172,6 +199,89 @@ def _cmd_watch(args: argparse.Namespace) -> int:
     return watch_model(model_dir, runtime_url, prefer=args.via)
 
 
+def _cmd_browse(args: argparse.Namespace) -> int:
+    """One-shot browse of a model's OPC-UA variables with current values."""
+    from openplc_client.model_client import connect
+
+    model_dir = _resolve_model(args.model)
+    host = urlparse(args.runtime or DEFAULT_RUNTIME_URL).hostname or "localhost"
+
+    async def go() -> int:
+        async with connect(model_dir, host=host) as m:
+            print(f"endpoint: {m.endpoint_url}")
+            print(f"{'name':<24s} {'type':<8s} value")
+            print(f"{'-'*24} {'-'*8} -----")
+            snap = await m.snapshot()
+            for name, value in snap.items():
+                dtype = m[name].datatype
+                if isinstance(value, float):
+                    rendered = f"{value:.3f}"
+                else:
+                    rendered = str(value)
+                print(f"{name:<24s} {dtype:<8s} {rendered}")
+            return 0
+
+    return asyncio.run(go())
+
+
+def _cmd_poke(args: argparse.Namespace) -> int:
+    """One-shot write to a single OPC-UA variable."""
+    from openplc_client.model_client import connect
+
+    model_dir = _resolve_model(args.model)
+    host = urlparse(args.runtime or DEFAULT_RUNTIME_URL).hostname or "localhost"
+
+    async def go() -> int:
+        async with connect(model_dir, host=host) as m:
+            if args.name not in m:
+                print(f"ERROR: '{args.name}' is not in conf/opcua.json. "
+                      f"Known: {sorted(m.variables)}")
+                return 1
+            before = await m.read(args.name)
+            await m.write(args.name, args.value)
+            after = await m.read(args.name)
+            print(f"{args.name}: {before} -> {after}")
+            return 0
+
+    return asyncio.run(go())
+
+
+def _cmd_sync_opcua(args: argparse.Namespace) -> int:
+    """Rewrite conf/opcua.json's `index` fields from the model's last
+    compiled debug.c."""
+    model_dir = _resolve_model(args.model)
+    staging = BUILD_ROOT / model_dir.name / "src"
+    if not (staging / "debug.c").is_file():
+        print(f"[sync-opcua] no build output at {staging}. "
+              f"Running build first...")
+        _build(model_dir)
+
+    try:
+        result = sync_opcua_json(model_dir, build_dir=staging)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"ERROR: {e}")
+        return 1
+
+    if not result.updated:
+        print("[sync-opcua] already in sync — no changes written")
+    else:
+        print(f"[sync-opcua] rewrote conf/opcua.json ({len(result.updated)} "
+              "index change(s)):")
+        for name, (old, new) in result.updated.items():
+            print(f"  {name}: {old} -> {new}")
+
+    if result.missing_from_debug:
+        print("[sync-opcua] these configured variables are NOT in debug.c "
+              "(left unchanged):")
+        for name in result.missing_from_debug:
+            print(f"  {name}")
+    if result.extra_in_debug:
+        print("[sync-opcua] these debug.c symbols are NOT exposed via OPC-UA:")
+        for name in result.extra_in_debug:
+            print(f"  {name}")
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m openplc_client",
@@ -223,6 +333,23 @@ def _build_parser() -> argparse.ArgumentParser:
                          help="Protocol to use (default auto — OPC-UA if configured)")
     p_watch.add_argument("--runtime", help=f"Runtime base URL (default {DEFAULT_RUNTIME_URL})")
     p_watch.set_defaults(func=_cmd_watch)
+
+    p_browse = sub.add_parser("browse", help="One-shot read of every OPC-UA variable in a model")
+    p_browse.add_argument("model", help="Path to a model folder")
+    p_browse.add_argument("--runtime", help=f"Runtime base URL (default {DEFAULT_RUNTIME_URL})")
+    p_browse.set_defaults(func=_cmd_browse)
+
+    p_poke = sub.add_parser("poke", help="One-shot write to an OPC-UA variable")
+    p_poke.add_argument("model", help="Path to a model folder")
+    p_poke.add_argument("name", help="Variable browse_name (e.g. inlet_valve)")
+    p_poke.add_argument("value", help="Value to write (true/false, int, float)")
+    p_poke.add_argument("--runtime", help=f"Runtime base URL (default {DEFAULT_RUNTIME_URL})")
+    p_poke.set_defaults(func=_cmd_poke)
+
+    p_sync = sub.add_parser("sync-opcua",
+                            help="Rewrite conf/opcua.json indices to match the current debug.c")
+    p_sync.add_argument("model", help="Path to a model folder")
+    p_sync.set_defaults(func=_cmd_sync_opcua)
 
     return parser
 

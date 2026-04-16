@@ -14,7 +14,10 @@
             "enabled": true,
             "security_policy": "None",
             "security_mode": "None",
-            "auth_methods": ["Anonymous", "Username"]
+            "auth_methods": [
+              "Anonymous",
+              "Username"
+            ]
           }
         ]
       },
@@ -42,7 +45,11 @@
             "initial_value": false,
             "description": "PLC alive signal (toggles ~1 Hz)",
             "index": 0,
-            "permissions": {"viewer": "r", "operator": "r", "engineer": "r"}
+            "permissions": {
+              "viewer": "r",
+              "operator": "r",
+              "engineer": "r"
+            }
           },
           {
             "node_id": "PLC.Tank.inlet_valve",
@@ -52,7 +59,11 @@
             "initial_value": false,
             "description": "Operator-controlled fill valve",
             "index": 1,
-            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+            "permissions": {
+              "viewer": "r",
+              "operator": "rw",
+              "engineer": "rw"
+            }
           },
           {
             "node_id": "PLC.Tank.outlet_pump",
@@ -62,7 +73,11 @@
             "initial_value": false,
             "description": "Operator-controlled drain pump",
             "index": 2,
-            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"}
+            "permissions": {
+              "viewer": "r",
+              "operator": "rw",
+              "engineer": "rw"
+            }
           },
           {
             "node_id": "PLC.Tank.level_high_alarm",
@@ -72,7 +87,11 @@
             "initial_value": false,
             "description": "Level > 80 %",
             "index": 3,
-            "permissions": {"viewer": "r", "operator": "r", "engineer": "r"}
+            "permissions": {
+              "viewer": "r",
+              "operator": "r",
+              "engineer": "r"
+            }
           },
           {
             "node_id": "PLC.Tank.level_low_alarm",
@@ -82,7 +101,11 @@
             "initial_value": true,
             "description": "Level < 20 %",
             "index": 4,
-            "permissions": {"viewer": "r", "operator": "r", "engineer": "r"}
+            "permissions": {
+              "viewer": "r",
+              "operator": "r",
+              "engineer": "r"
+            }
           },
           {
             "node_id": "PLC.Tank.tank_level",
@@ -92,7 +115,11 @@
             "initial_value": 0.0,
             "description": "Tank fill level (0-100 %)",
             "index": 5,
-            "permissions": {"viewer": "r", "operator": "r", "engineer": "rw"}
+            "permissions": {
+              "viewer": "r",
+              "operator": "r",
+              "engineer": "rw"
+            }
           },
           {
             "node_id": "PLC.Tank.pump_run_count",
@@ -102,7 +129,11 @@
             "initial_value": 0,
             "description": "Rising-edge count on outlet pump",
             "index": 6,
-            "permissions": {"viewer": "r", "operator": "r", "engineer": "rw"}
+            "permissions": {
+              "viewer": "r",
+              "operator": "r",
+              "engineer": "rw"
+            }
           }
         ],
         "structures": [],
