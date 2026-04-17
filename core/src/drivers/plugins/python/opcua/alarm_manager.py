@@ -291,83 +291,49 @@ class AlarmManager:
         st: _AlarmState,
         inputs: Dict[str, bool],
     ) -> None:
-        """Mutate the EventGenerator's event payload to reflect current
-        state, then trigger() to broadcast. asyncua handles EventId
-        regeneration and Time/ReceiveTime stamping inside trigger()."""
-        ev = ar.event_generator.event
+        """Apply current state to BOTH event payloads (Server-rooted and
+        Condition-rooted), then call trigger() on each. Dual emission
+        is required because asyncua's MonitoredItemService dispatches
+        on exact emitting_node match — see AlarmRuntime docstring."""
         alarm = ar.alarm
         now = datetime.now(timezone.utc)
-
         active = st.active
-        # Severity: report at config level while active, drop to 1
-        # (informational) when returning to normal — standard OPC UA
-        # convention so historians can plot severity vs time.
-        ev.Severity = alarm.severity if active else 1
-        setattr(ev, "LastSeverity", alarm.severity)
-        ev.Message = ua.LocalizedText(
-            alarm.message_active if active else alarm.message_inactive
-        )
-
-        # ActiveState. We do NOT set ActiveState/TransitionTime here:
-        # asyncua's Variant constructor crashes (`'NodeId' has no
-        # attribute __name__`) when wrapping a non-None value whose
-        # data_type was registered as a NodeId rather than a
-        # VariantType — and TransitionTime fields are exactly that.
-        # The event's own Time field is set by trigger() and clients
-        # use that as the transition timestamp.
-        setattr(ev, "ActiveState/Id", active)
-        setattr(ev, "ActiveState",
-                ua.LocalizedText("Active" if active else "Inactive"))
-
-        # AckedState / ConfirmedState — reset on rising-edge active,
-        # otherwise reflect cached state (which Acknowledge/Confirm
-        # method handlers will mutate from outside this module).
-        setattr(ev, "AckedState/Id", st.acked)
-        setattr(ev, "AckedState",
-                ua.LocalizedText("Acknowledged" if st.acked else "Unacknowledged"))
-        setattr(ev, "ConfirmedState/Id", st.confirmed)
-        setattr(ev, "ConfirmedState",
-                ua.LocalizedText("Confirmed" if st.confirmed else "Unconfirmed"))
-
-        # Per-side state for NonExclusiveLevel (no TransitionTime —
-        # see comment above).
-        if alarm.alarm_type == "NonExclusiveLevel":
-            high = inputs.get("high", False)
-            low = inputs.get("low", False)
-            setattr(ev, "HighState/Id", high)
-            setattr(ev, "HighState",
-                    ua.LocalizedText("High" if high else "Inactive"))
-            setattr(ev, "LowState/Id", low)
-            setattr(ev, "LowState",
-                    ua.LocalizedText("Low" if low else "Inactive"))
-
-        # Retain controls visibility in ConditionRefresh: keep True while
-        # the operator still cares (active, or active-and-since-cleared
-        # but not yet acknowledged). Goes False once the alarm is both
-        # back to normal and acknowledged.
         retain = active or (not st.acked)
-        setattr(ev, "Retain", retain)
 
-        # Quality stays Good — we have no separate path for sensor-bad
-        # in this PLC contract.
-        setattr(ev, "Quality", ua.StatusCode(ua.StatusCodes.Good))
+        # Apply identical state to both event payloads so subscribers
+        # on Server and subscribers on Condition see equivalent events
+        # (modulo emitting_node and a fresh EventId per trigger call).
+        self._apply_state_to_event(ar.event_generator_server.event,
+                                   alarm, st, inputs, active)
+        self._apply_state_to_event(ar.event_generator_condition.event,
+                                   alarm, st, inputs, active)
 
-        try:
-            await ar.event_generator.trigger(time_attr=now)
-            # asyncua's trigger() generates a fresh EventId per call;
-            # capture it for Acknowledge/Confirm correlation.
+        triggered = 0
+        for label, ev_gen in (
+            ("server", ar.event_generator_server),
+            ("condition", ar.event_generator_condition),
+        ):
             try:
-                eid = ev.EventId
-                if hasattr(eid, "Value"):
-                    eid = eid.Value
-                if isinstance(eid, (bytes, bytearray)):
-                    st.last_event_id = bytes(eid)
-            except Exception:
-                pass
-        except Exception as e:
-            log_error(
-                f"Failed to fire event for {alarm.node_id}: {e}"
-            )
+                await ev_gen.trigger(time_attr=now)
+                triggered += 1
+                # asyncua's trigger() generates a fresh EventId per
+                # call; capture from whichever fired last for
+                # Acknowledge/Confirm correlation.
+                try:
+                    eid = ev_gen.event.EventId
+                    if hasattr(eid, "Value"):
+                        eid = eid.Value
+                    if isinstance(eid, (bytes, bytearray)):
+                        st.last_event_id = bytes(eid)
+                except Exception:
+                    pass
+            except Exception as e:
+                log_error(
+                    f"Failed to fire {label}-rooted event for "
+                    f"{alarm.node_id}: {e}"
+                )
+
+        if triggered == 0:
             return
 
         # Mirror the event state onto the Condition's address-space
@@ -378,8 +344,67 @@ class AlarmManager:
 
         log_debug(
             f"alarm {alarm.node_id}: active={active} acked={st.acked} "
-            f"retain={retain} inputs={inputs}"
+            f"retain={retain} inputs={inputs} (fired {triggered}/2)"
         )
+
+    def _apply_state_to_event(
+        self,
+        ev: object,
+        alarm,
+        st: _AlarmState,
+        inputs: Dict[str, bool],
+        active: bool,
+    ) -> None:
+        """Stamp current state onto a single event payload. Called once
+        per EventGenerator (Server-rooted and Condition-rooted) per
+        transition so both deliveries carry equivalent A&C state.
+
+        We do NOT set TransitionTime fields: asyncua's Variant
+        constructor crashes (`'NodeId' has no attribute __name__`)
+        when wrapping a non-None value whose data_type was registered
+        as a NodeId rather than a VariantType — and TransitionTime
+        fields are exactly that. The event's own Time field is set by
+        trigger() and clients use that as the transition timestamp.
+        """
+        # Severity: report at config level while active, drop to 1
+        # (informational) when returning to normal — standard OPC UA
+        # convention so historians can plot severity vs time.
+        ev.Severity = alarm.severity if active else 1
+        setattr(ev, "LastSeverity", alarm.severity)
+        ev.Message = ua.LocalizedText(
+            alarm.message_active if active else alarm.message_inactive
+        )
+
+        setattr(ev, "ActiveState/Id", active)
+        setattr(ev, "ActiveState",
+                ua.LocalizedText("Active" if active else "Inactive"))
+
+        # AckedState / ConfirmedState — reset on rising-edge active is
+        # done in _process_alarm; here we just reflect cached state.
+        setattr(ev, "AckedState/Id", st.acked)
+        setattr(ev, "AckedState",
+                ua.LocalizedText("Acknowledged" if st.acked else "Unacknowledged"))
+        setattr(ev, "ConfirmedState/Id", st.confirmed)
+        setattr(ev, "ConfirmedState",
+                ua.LocalizedText("Confirmed" if st.confirmed else "Unconfirmed"))
+
+        if alarm.alarm_type == "NonExclusiveLevel":
+            high = inputs.get("high", False)
+            low = inputs.get("low", False)
+            setattr(ev, "HighState/Id", high)
+            setattr(ev, "HighState",
+                    ua.LocalizedText("High" if high else "Inactive"))
+            setattr(ev, "LowState/Id", low)
+            setattr(ev, "LowState",
+                    ua.LocalizedText("Low" if low else "Inactive"))
+
+        # Retain controls visibility in ConditionRefresh: keep True
+        # while the operator still cares (active, or
+        # active-and-since-cleared but not yet acknowledged). Goes
+        # False once the alarm is both back to normal and acknowledged.
+        retain = active or (not st.acked)
+        setattr(ev, "Retain", retain)
+        setattr(ev, "Quality", ua.StatusCode(ua.StatusCodes.Good))
 
     async def _mirror_state_to_properties(
         self,

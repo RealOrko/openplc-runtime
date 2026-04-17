@@ -59,15 +59,24 @@ _ALARM_TYPE_NODEIDS = {
 class AlarmRuntime(NamedTuple):
     """One row of the alarm registry, handed to alarm_manager.py.
 
-    Contains everything the per-cycle transition detector needs to fire
-    a state-change event for one Condition: the original config, the
-    address-space node, the seeded EventGenerator (whose .event payload
-    is mutated and replayed via trigger()), and the indices of the PLC
-    input variables driving the Condition state.
+    Carries TWO EventGenerators per Condition:
+      - event_generator_server: emitting_node = Server. Used by clients
+        that subscribe events on the Server node (asyncua's
+        `subscribe_alarms_and_conditions(server)` and UAExpert default).
+      - event_generator_condition: emitting_node = Condition itself.
+        Used by clients that follow the OPC UA spec and subscribe per
+        Condition (open62541-based clients, sindarin-pkg-net-opcua,
+        most industrial SCADA tooling).
+
+    asyncua's MonitoredItemService keys event subscriptions by exact
+    NodeId match — there's no spec-style HasNotifier bubbling — so a
+    single emitting_node would only reach one of the two subscription
+    styles. Dual emission satisfies both.
     """
     alarm: AlarmCondition
     condition_node: Node
-    event_generator: object  # asyncua EventGenerator (avoid hard import dep)
+    event_generator_server: object     # asyncua EventGenerator
+    event_generator_condition: object  # asyncua EventGenerator
     # Map of semantic input role -> PLC debug-variable index. Keys are
     # one of: "input" (OffNormal), "high" / "low" (level alarms).
     input_indices: Dict[str, int]
@@ -130,23 +139,25 @@ class AlarmBuilder:
                 parent = await self.addr._resolve_parent(objects, alarm.node_id)
 
                 condition_node = await self._create_condition(parent, alarm)
-                # asyncua's MonitoredItemService keys event subscriptions
-                # by the exact emitting_node — there's no spec-style
-                # hierarchy bubbling. The canonical client API
-                # `subscribe_alarms_and_conditions(server)` only sees
-                # events whose emitting_node is the Server. So we route
-                # events through the Server here, and rewrite SourceNode
-                # to the Condition in _seed_event_payload so clients can
-                # still tell which alarm fired.
-                ev_gen = await self.server.get_event_generator(
+                # Build TWO EventGenerators per Condition (see AlarmRuntime
+                # docstring for why). The Server-rooted one fires to
+                # asyncua-style subscribers; the Condition-rooted one
+                # fires to spec-style per-Condition subscribers.
+                ev_gen_server = await self.server.get_event_generator(
                     _ALARM_TYPE_NODEIDS[alarm.alarm_type],
                     self.server.nodes.server,
                 )
+                ev_gen_condition = await self.server.get_event_generator(
+                    _ALARM_TYPE_NODEIDS[alarm.alarm_type],
+                    condition_node,
+                )
 
-                # Seed the event payload with steady-state values. The
-                # alarm starts Enabled, Inactive, Acknowledged, Confirmed,
-                # Retain=False. alarm_manager rewrites these per transition.
-                self._seed_event_payload(ev_gen.event, alarm, condition_node)
+                # Seed both event payloads with the same steady-state
+                # values. The alarm starts Enabled, Inactive,
+                # Acknowledged, Confirmed, Retain=False. alarm_manager
+                # rewrites both events identically per transition.
+                self._seed_event_payload(ev_gen_server.event, alarm, condition_node)
+                self._seed_event_payload(ev_gen_condition.event, alarm, condition_node)
 
                 # Mirror the seeded values onto the address-space property
                 # children so a client that browses the Condition (vs.
@@ -162,7 +173,8 @@ class AlarmBuilder:
                 self.runtime.append(AlarmRuntime(
                     alarm=alarm,
                     condition_node=condition_node,
-                    event_generator=ev_gen,
+                    event_generator_server=ev_gen_server,
+                    event_generator_condition=ev_gen_condition,
                     input_indices=input_indices,
                     source_node_id=alarm.source_node_id,
                 ))
