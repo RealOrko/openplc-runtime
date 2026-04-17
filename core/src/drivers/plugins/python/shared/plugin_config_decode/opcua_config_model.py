@@ -366,6 +366,90 @@ class SimpleVariable:
             engineering_units=data.get("engineering_units"),
         )
 
+# Supported OPC UA Alarm & Condition shapes. Each maps to a concrete
+# asyncua event type:
+#   NonExclusiveLevel -> NonExclusiveLevelAlarmType (i=10060)
+#                        Pair of independent High and Low limits, both can
+#                        be active simultaneously. Source variable must be
+#                        numeric; high_input and low_input are the BOOLs
+#                        the PLC drives for each side.
+#   ExclusiveLevel    -> ExclusiveLevelAlarmType (i=9482)
+#                        Single-direction limit (high OR low, not both).
+#                        Used for one-sided thresholds (e.g. low chlorine
+#                        residual, low chemical stock).
+#   OffNormal         -> OffNormalAlarmType (i=10637)
+#                        Plain Boolean condition. Active when input BOOL
+#                        is True. Used for fault flags, equipment trips.
+ALARM_TYPES = frozenset(["NonExclusiveLevel", "ExclusiveLevel", "OffNormal"])
+
+
+@dataclass
+class AlarmCondition:
+    """Declares an OPC UA Alarm & Condition node.
+
+    The PLC's BOOL alarm tags drive the Condition's ActiveState — the
+    controller is the source of truth, OPC UA is the publishing layer
+    with proper A&C semantics on top. This matches how Siemens TIA-Portal
+    and Beckhoff TwinCAT publish PLC-defined alarms.
+
+    Field requirements per alarm_type:
+        NonExclusiveLevel: high_input_node_id + low_input_node_id +
+                           high_limit + low_limit + source_node_id
+        ExclusiveLevel:    exactly one of (high_input_node_id+high_limit)
+                           or (low_input_node_id+low_limit), plus
+                           source_node_id
+        OffNormal:         input_node_id only
+    """
+    node_id: str
+    browse_name: str
+    display_name: str
+    description: str
+    alarm_type: str  # one of ALARM_TYPES
+    severity: int
+    message_active: str
+    message_inactive: str
+    # OffNormal: the single BOOL whose True state means alarm active.
+    input_node_id: Optional[str] = None
+    # Level alarms: the analog Variable being monitored. Reported as
+    # InputNode on the Condition; HighLimit/LowLimit are properties.
+    source_node_id: Optional[str] = None
+    high_input_node_id: Optional[str] = None
+    low_input_node_id: Optional[str] = None
+    high_limit: Optional[float] = None
+    low_limit: Optional[float] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'AlarmCondition':
+        try:
+            node_id = data["node_id"]
+            browse_name = data["browse_name"]
+            display_name = data["display_name"]
+            description = data["description"]
+            alarm_type = data["alarm_type"]
+            severity = data["severity"]
+            message_active = data["message_active"]
+            message_inactive = data["message_inactive"]
+        except KeyError as e:
+            raise ValueError(f"Missing required field in alarm condition: {e}")
+
+        return cls(
+            node_id=node_id,
+            browse_name=browse_name,
+            display_name=display_name,
+            description=description,
+            alarm_type=alarm_type,
+            severity=int(severity),
+            message_active=message_active,
+            message_inactive=message_inactive,
+            input_node_id=data.get("input_node_id"),
+            source_node_id=data.get("source_node_id"),
+            high_input_node_id=data.get("high_input_node_id"),
+            low_input_node_id=data.get("low_input_node_id"),
+            high_limit=data.get("high_limit"),
+            low_limit=data.get("low_limit"),
+        )
+
+
 @dataclass
 class AddressSpace:
     """Address space configuration."""
@@ -373,6 +457,7 @@ class AddressSpace:
     variables: List[SimpleVariable]
     structures: List[StructVariable]
     arrays: List[ArrayVariable]
+    alarms: List[AlarmCondition]
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'AddressSpace':
@@ -382,18 +467,21 @@ class AddressSpace:
             variables_data = data.get("variables", [])
             structures_data = data.get("structures", [])
             arrays_data = data.get("arrays", [])
+            alarms_data = data.get("alarms", [])
         except KeyError as e:
             raise ValueError(f"Missing required field in address space: {e}")
 
         variables = [SimpleVariable.from_dict(var) for var in variables_data]
         structures = [StructVariable.from_dict(struct) for struct in structures_data]
         arrays = [ArrayVariable.from_dict(arr) for arr in arrays_data]
+        alarms = [AlarmCondition.from_dict(a) for a in alarms_data]
 
         return cls(
             namespace_uri=namespace_uri,
             variables=variables,
             structures=structures,
-            arrays=arrays
+            arrays=arrays,
+            alarms=alarms,
         )
 
 @dataclass
@@ -491,11 +579,14 @@ class OpcuaMasterConfig(PluginConfigContract):
             # Validate address space
             address_space = plugin.config.address_space
 
-            # Check for duplicate node_ids
+            # Check for duplicate node_ids (vars + structs + arrays + alarms
+            # all share the same OPC UA address-space namespace, so a
+            # collision here would silently shadow one node with another)
             all_node_ids = []
             all_node_ids.extend([var.node_id for var in address_space.variables])
             all_node_ids.extend([struct.node_id for struct in address_space.structures])
             all_node_ids.extend([arr.node_id for arr in address_space.arrays])
+            all_node_ids.extend([alarm.node_id for alarm in address_space.alarms])
 
             if len(all_node_ids) != len(set(all_node_ids)):
                 raise ValueError(f"Duplicate node_ids found in plugin '{plugin.name}'")
@@ -624,6 +715,98 @@ class OpcuaMasterConfig(PluginConfigContract):
                     arr.min_value,
                     arr.max_value,
                 )
+
+            # Validate alarm conditions: required fields per type and that
+            # every referenced node_id resolves to a declared variable of
+            # the right datatype family. Catches typos at load time
+            # rather than letting Conditions instantiate against missing
+            # inputs and silently never fire.
+            var_index = {var.node_id: var for var in address_space.variables}
+
+            def require_bool_input(alarm_label: str, ref_field: str, ref_id: Optional[str]) -> None:
+                if not ref_id:
+                    raise ValueError(f"{alarm_label}: '{ref_field}' is required")
+                ref_var = var_index.get(ref_id)
+                if ref_var is None:
+                    raise ValueError(
+                        f"{alarm_label}: '{ref_field}' references unknown node_id "
+                        f"'{ref_id}' (must be a declared variable)"
+                    )
+                if ref_var.datatype.upper() != "BOOL":
+                    raise ValueError(
+                        f"{alarm_label}: '{ref_field}' references '{ref_id}' "
+                        f"(datatype={ref_var.datatype}); BOOL is required"
+                    )
+
+            def require_numeric_source(alarm_label: str, ref_id: Optional[str]) -> None:
+                if not ref_id:
+                    raise ValueError(f"{alarm_label}: 'source_node_id' is required")
+                ref_var = var_index.get(ref_id)
+                if ref_var is None:
+                    raise ValueError(
+                        f"{alarm_label}: 'source_node_id' references unknown "
+                        f"node_id '{ref_id}'"
+                    )
+                if ref_var.datatype.upper() not in ANALOG_VALID_DATATYPES:
+                    raise ValueError(
+                        f"{alarm_label}: 'source_node_id' references "
+                        f"'{ref_id}' (datatype={ref_var.datatype}); a numeric "
+                        f"datatype is required"
+                    )
+
+            for alarm in address_space.alarms:
+                label = f"alarm '{alarm.node_id}' in plugin '{plugin.name}'"
+                if alarm.alarm_type not in ALARM_TYPES:
+                    raise ValueError(
+                        f"{label}: invalid alarm_type '{alarm.alarm_type}'. "
+                        f"Valid: {sorted(ALARM_TYPES)}"
+                    )
+                if not (1 <= alarm.severity <= 1000):
+                    raise ValueError(
+                        f"{label}: severity must be in 1..1000 "
+                        f"(got {alarm.severity})"
+                    )
+
+                if alarm.alarm_type == "OffNormal":
+                    require_bool_input(label, "input_node_id", alarm.input_node_id)
+                elif alarm.alarm_type == "NonExclusiveLevel":
+                    require_bool_input(label, "high_input_node_id", alarm.high_input_node_id)
+                    require_bool_input(label, "low_input_node_id", alarm.low_input_node_id)
+                    require_numeric_source(label, alarm.source_node_id)
+                    if alarm.high_limit is None or alarm.low_limit is None:
+                        raise ValueError(
+                            f"{label}: NonExclusiveLevel requires both "
+                            f"high_limit and low_limit"
+                        )
+                    if alarm.low_limit >= alarm.high_limit:
+                        raise ValueError(
+                            f"{label}: low_limit ({alarm.low_limit}) must be "
+                            f"< high_limit ({alarm.high_limit})"
+                        )
+                elif alarm.alarm_type == "ExclusiveLevel":
+                    has_high = alarm.high_input_node_id is not None
+                    has_low = alarm.low_input_node_id is not None
+                    if has_high == has_low:
+                        # both set or both unset
+                        raise ValueError(
+                            f"{label}: ExclusiveLevel requires exactly one of "
+                            f"high_input_node_id or low_input_node_id"
+                        )
+                    require_numeric_source(label, alarm.source_node_id)
+                    if has_high:
+                        require_bool_input(label, "high_input_node_id", alarm.high_input_node_id)
+                        if alarm.high_limit is None:
+                            raise ValueError(
+                                f"{label}: ExclusiveLevel with high side "
+                                f"requires high_limit"
+                            )
+                    else:
+                        require_bool_input(label, "low_input_node_id", alarm.low_input_node_id)
+                        if alarm.low_limit is None:
+                            raise ValueError(
+                                f"{label}: ExclusiveLevel with low side "
+                                f"requires low_limit"
+                            )
 
         # Check for duplicate plugin names
         plugin_names = [plugin.name for plugin in self.plugins]

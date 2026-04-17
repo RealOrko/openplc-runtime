@@ -86,7 +86,8 @@ class SynchronizationManager:
         self,
         buffer_accessor: SafeBufferAccess,
         variable_nodes: Dict[int, VariableNode],
-        server: Optional[Server] = None
+        server: Optional[Server] = None,
+        alarm_manager: Optional[Any] = None,
     ):
         """
         Initialize the synchronization manager.
@@ -95,10 +96,14 @@ class SynchronizationManager:
             buffer_accessor: SafeBufferAccess for PLC memory operations
             variable_nodes: Dict mapping variable index to VariableNode
             server: Optional Server instance for optimized write_attribute_value
+            alarm_manager: Optional AlarmManager whose process_cycle() is
+                called once per scan cycle right after sync, so A&C
+                events fire on the same cadence as PLC value updates.
         """
         self.buffer_accessor = buffer_accessor
         self.variable_nodes = variable_nodes
         self.server = server
+        self.alarm_manager = alarm_manager
 
         # Optimization: metadata cache for direct memory access
         self.variable_metadata: Dict[int, VariableMetadata] = {}
@@ -249,6 +254,12 @@ class SynchronizationManager:
 
                 # Direction 2: Runtime → OPC-UA
                 await self.sync_runtime_to_opcua()
+
+                # A&C: detect transitions on alarm input BOOLs and fire
+                # Condition events. Runs after sync so the events line up
+                # with the values clients have just received.
+                if self.alarm_manager is not None:
+                    await self.alarm_manager.process_cycle()
 
                 # Wait for next cycle
                 await asyncio.sleep(cycle_time_seconds)

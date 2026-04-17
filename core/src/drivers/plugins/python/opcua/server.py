@@ -28,6 +28,8 @@ try:
     from .opcua_security import OpcuaSecurityManager
     from .opcua_endpoints_config import normalize_endpoint_url, suggest_client_endpoints
     from .address_space import AddressSpaceBuilder
+    from .alarm_builder import AlarmBuilder
+    from .alarm_manager import AlarmManager
     from .synchronization import SynchronizationManager
     from .user_manager import OpenPLCUserManager
     from .callbacks import PermissionCallbackHandler
@@ -37,6 +39,8 @@ except ImportError:
     from opcua_security import OpcuaSecurityManager
     from opcua_endpoints_config import normalize_endpoint_url, suggest_client_endpoints
     from address_space import AddressSpaceBuilder
+    from alarm_builder import AlarmBuilder
+    from alarm_manager import AlarmManager
     from synchronization import SynchronizationManager
     from user_manager import OpenPLCUserManager
     from callbacks import PermissionCallbackHandler
@@ -98,6 +102,12 @@ class OpcuaServerManager:
         # Address space builder (initialized in _create_address_space)
         self.address_space_builder: Optional[AddressSpaceBuilder] = None
 
+        # Alarm builder + runtime registry (initialized in _create_alarms).
+        # When the config declares no alarms, both stay None and the
+        # alarm path is a no-op end-to-end.
+        self.alarm_builder: Optional[AlarmBuilder] = None
+        self.alarm_manager: Optional[AlarmManager] = None
+
         # Node mappings (populated by address space builder)
         self.variable_nodes: Dict[int, VariableNode] = {}
         self.node_permissions: Dict[str, Any] = {}
@@ -133,6 +143,12 @@ class OpcuaServerManager:
             if not await self._create_address_space():
                 log_error("Failed to create address space")
                 return
+
+            # Build A&C Conditions on top of the address space. Must run
+            # AFTER variable nodes exist (Conditions reference them as
+            # InputNode / SourceNode) and BEFORE server.start() so the
+            # Conditions are present when clients connect.
+            await self._create_alarms()
 
             # Register permission callbacks (AFTER address space, BEFORE start)
             if not await self._register_callbacks():
@@ -377,6 +393,37 @@ class OpcuaServerManager:
             traceback.print_exc()
             return False
 
+    async def _create_alarms(self) -> None:
+        """Instantiate Condition objects from config and stand up the
+        alarm runtime. No-op when the config declares no alarms.
+        Failures are logged but don't abort server startup — the
+        variable surface still works without A&C."""
+        try:
+            if not self.config.address_space.alarms:
+                log_debug("No A&C alarms declared")
+                return
+
+            self.alarm_builder = AlarmBuilder(
+                self.server,
+                self.namespace_idx,
+                self.config,
+                self.address_space_builder,
+            )
+            ok = await self.alarm_builder.build()
+            if not ok:
+                log_warn("AlarmBuilder reported no Conditions created")
+                return
+
+            self.alarm_manager = AlarmManager(
+                buffer_accessor=self.buffer_accessor,
+                runtime=self.alarm_builder.runtime,
+                server=self.server,
+            )
+            await self.alarm_manager.initialize()
+        except Exception as e:
+            log_error(f"Failed to create alarms: {e}")
+            traceback.print_exc()
+
     async def _initialize_sync_manager(self) -> bool:
         """
         Initialize the synchronization manager.
@@ -392,7 +439,8 @@ class OpcuaServerManager:
             self.sync_manager = SynchronizationManager(
                 buffer_accessor=self.buffer_accessor,
                 variable_nodes=self.variable_nodes,
-                server=self.server  # Pass server for subscription support
+                server=self.server,  # Pass server for subscription support
+                alarm_manager=self.alarm_manager,
             )
 
             if not await self.sync_manager.initialize():
