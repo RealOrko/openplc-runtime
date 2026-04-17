@@ -221,6 +221,20 @@ class OpcuaServerManager:
             await self.server.init()
             log_debug("OPC-UA server initialized")
 
+            # Enable event subscriptions on the Server object so OPC UA
+            # clients can attach event MonitoredItems. EventNotifier=1 sets
+            # the SubscribeToEvents bit; without it CreateMonitoredItem
+            # with an EventFilter returns BadAttributeIdInvalid even
+            # though the rest of the spec is wired up.
+            try:
+                await self.server.nodes.server.write_attribute(
+                    ua.AttributeIds.EventNotifier,
+                    ua.DataValue(ua.Variant(1, ua.VariantType.Byte)),
+                )
+                log_debug("EventNotifier=1 set on Server node (SubscribeToEvents)")
+            except Exception as e:
+                log_warn(f"Failed to set EventNotifier on Server node: {e}")
+
             # Register namespace (AFTER init)
             self.namespace_idx = await self.server.register_namespace(
                 self.config.address_space.namespace_uri

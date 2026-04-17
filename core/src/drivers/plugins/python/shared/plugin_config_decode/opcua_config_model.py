@@ -33,6 +33,17 @@ VALID_DATATYPES = frozenset([
     "INT32", "FLOAT",
 ])
 
+# Subset eligible for AnalogItemType promotion. OPC UA AnalogItemType
+# requires a numeric scalar datatype; BOOL/STRING/TIME/DATE/TOD/DT must
+# stay BaseDataVariableType.
+ANALOG_VALID_DATATYPES = frozenset([
+    "SINT", "INT", "DINT", "LINT",
+    "USINT", "UINT", "UDINT", "ULINT",
+    "REAL", "LREAL",
+    "BYTE", "WORD", "DWORD", "LWORD",
+    "INT32", "FLOAT",
+])
+
 
 @dataclass
 class SecurityProfile:
@@ -187,6 +198,14 @@ class VariableField:
     index: Optional[int]  # None for complex types that have nested fields
     permissions: VariablePermissions
     fields: Optional[List['VariableField']] = None  # Nested fields for complex types
+    # Optional AnalogItemType metadata. When is_analog is True the leaf
+    # node is promoted from BaseDataVariableType to AnalogItemType so OPC
+    # UA clients can drive deadband filtering. min/max populate EURange;
+    # engineering_units populates an EUInformation property.
+    is_analog: bool = False
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
+    engineering_units: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'VariableField':
@@ -213,7 +232,11 @@ class VariableField:
             initial_value=initial_value,
             index=index,
             permissions=permissions,
-            fields=nested_fields
+            fields=nested_fields,
+            is_analog=bool(data.get("is_analog", False)),
+            min_value=data.get("min_value"),
+            max_value=data.get("max_value"),
+            engineering_units=data.get("engineering_units"),
         )
 
 @dataclass
@@ -258,6 +281,10 @@ class ArrayVariable:
     initial_value: Any
     index: int
     permissions: VariablePermissions
+    is_analog: bool = False
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
+    engineering_units: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ArrayVariable':
@@ -284,7 +311,11 @@ class ArrayVariable:
             length=length,
             initial_value=initial_value,
             index=index,
-            permissions=permissions
+            permissions=permissions,
+            is_analog=bool(data.get("is_analog", False)),
+            min_value=data.get("min_value"),
+            max_value=data.get("max_value"),
+            engineering_units=data.get("engineering_units"),
         )
 
 @dataclass
@@ -298,6 +329,10 @@ class SimpleVariable:
     description: str
     index: int
     permissions: VariablePermissions
+    is_analog: bool = False
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
+    engineering_units: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'SimpleVariable':
@@ -324,7 +359,11 @@ class SimpleVariable:
             initial_value=initial_value,
             description=description,
             index=index,
-            permissions=permissions
+            permissions=permissions,
+            is_analog=bool(data.get("is_analog", False)),
+            min_value=data.get("min_value"),
+            max_value=data.get("max_value"),
+            engineering_units=data.get("engineering_units"),
         )
 
 @dataclass
@@ -508,20 +547,83 @@ class OpcuaMasterConfig(PluginConfigContract):
                                 f"Valid types: {sorted(VALID_DATATYPES)}"
                             )
 
+            # Helper to validate analog metadata: AnalogItemType requires a
+            # numeric scalar datatype and a complete EURange (both bounds
+            # set, low < high). Catches misconfiguration at load time
+            # rather than letting clients see a malformed analog node.
+            def validate_analog_metadata(
+                label: str,
+                datatype: str,
+                is_analog: bool,
+                min_value: Optional[float],
+                max_value: Optional[float],
+            ) -> None:
+                if not is_analog:
+                    return
+                if datatype.upper() not in ANALOG_VALID_DATATYPES:
+                    raise ValueError(
+                        f"is_analog=true on {label} requires a numeric datatype, "
+                        f"got '{datatype}'. Valid analog types: "
+                        f"{sorted(ANALOG_VALID_DATATYPES)}"
+                    )
+                if min_value is None or max_value is None:
+                    raise ValueError(
+                        f"is_analog=true on {label} requires both min_value "
+                        f"and max_value (EURange) to be set"
+                    )
+                if min_value >= max_value:
+                    raise ValueError(
+                        f"is_analog=true on {label} requires min_value < max_value "
+                        f"(got min={min_value}, max={max_value})"
+                    )
+
+            def validate_analog_fields(
+                fields: List[VariableField],
+                struct_node_id: str,
+                path: str = "",
+            ) -> None:
+                for field in fields:
+                    current_path = f"{path}.{field.name}" if path else field.name
+                    if field.fields:
+                        validate_analog_fields(field.fields, struct_node_id, current_path)
+                    else:
+                        validate_analog_metadata(
+                            f"field '{current_path}' in struct '{struct_node_id}'",
+                            field.datatype,
+                            field.is_analog,
+                            field.min_value,
+                            field.max_value,
+                        )
+
             for var in address_space.variables:
                 if var.datatype.upper() not in VALID_DATATYPES:
                     raise ValueError(
                         f"Invalid datatype '{var.datatype}' for variable '{var.node_id}' "
                         f"in plugin '{plugin.name}'. Valid types: {sorted(VALID_DATATYPES)}"
                     )
+                validate_analog_metadata(
+                    f"variable '{var.node_id}'",
+                    var.datatype,
+                    var.is_analog,
+                    var.min_value,
+                    var.max_value,
+                )
             for struct in address_space.structures:
                 validate_field_datatypes(struct.fields, struct.node_id, plugin.name)
+                validate_analog_fields(struct.fields, struct.node_id)
             for arr in address_space.arrays:
                 if arr.datatype.upper() not in VALID_DATATYPES:
                     raise ValueError(
                         f"Invalid datatype '{arr.datatype}' for array '{arr.node_id}' "
                         f"in plugin '{plugin.name}'. Valid types: {sorted(VALID_DATATYPES)}"
                     )
+                validate_analog_metadata(
+                    f"array '{arr.node_id}'",
+                    arr.datatype,
+                    arr.is_analog,
+                    arr.min_value,
+                    arr.max_value,
+                )
 
         # Check for duplicate plugin names
         plugin_names = [plugin.name for plugin in self.plugins]

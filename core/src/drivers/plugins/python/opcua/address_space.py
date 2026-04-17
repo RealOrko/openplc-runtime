@@ -40,6 +40,11 @@ from shared.plugin_config_decode.opcua_config_model import (
     VariablePermissions,
 )
 
+# OPC UA Engineering Units NamespaceUri for the UNECE/CEFACT Common Code
+# list — the canonical registry for OPC UA EUInformation. Clients that
+# resolve UnitId to a unit symbol (e.g. UAExpert) expect this URI.
+_EU_NAMESPACE_URI = "http://www.opcfoundation.org/UA/units/un/cefact"
+
 
 class AddressSpaceBuilder:
     """
@@ -232,6 +237,15 @@ class AddressSpaceBuilder:
         else:
             log_debug(f"Node {var.node_id} set as read-only")
 
+        if var.is_analog:
+            await self._promote_to_analog_item(
+                node,
+                var.node_id,
+                var.min_value,
+                var.max_value,
+                var.engineering_units,
+            )
+
         # Store node mapping
         access_mode = "readwrite" if has_write_permission else "readonly"
         var_node = VariableNode(
@@ -358,6 +372,15 @@ class AddressSpaceBuilder:
         if has_write_permission:
             await node.set_writable()
 
+        if field.is_analog:
+            await self._promote_to_analog_item(
+                node,
+                field_node_id,
+                field.min_value,
+                field.max_value,
+                field.engineering_units,
+            )
+
         # Store node mapping (only for leaf fields with valid indices)
         if field.index is not None:
             access_mode = "readwrite" if has_write_permission else "readonly"
@@ -431,6 +454,15 @@ class AddressSpaceBuilder:
         if has_write_permission:
             await node.set_writable()
 
+        if arr.is_analog:
+            await self._promote_to_analog_item(
+                node,
+                arr.node_id,
+                arr.min_value,
+                arr.max_value,
+                arr.engineering_units,
+            )
+
         # Store node mapping
         access_mode = "readwrite" if has_write_permission else "readonly"
         var_node = VariableNode(
@@ -447,6 +479,62 @@ class AddressSpaceBuilder:
         self.nodeid_to_variable[node.nodeid] = arr.node_id
 
         log_debug(f"Created array {arr.node_id}[{arr.length}] (index: {arr.index})")
+
+    async def _promote_to_analog_item(
+        self,
+        node: Node,
+        label: str,
+        min_value: Optional[float],
+        max_value: Optional[float],
+        engineering_units: Optional[str],
+    ) -> None:
+        """Re-point HasTypeDefinition from BaseDataVariableType (i=63) to
+        AnalogItemType (i=2368) and attach the EURange / EngineeringUnits
+        properties that clients need for deadband filtering. Failures are
+        logged and swallowed so a malformed analog tag never takes the
+        whole address space down."""
+        try:
+            await node.delete_reference(
+                ua.NodeId(ua.ObjectIds.BaseDataVariableType),
+                ua.ObjectIds.HasTypeDefinition,
+                forward=True,
+                bidirectional=True,
+            )
+            await node.add_reference(
+                ua.NodeId(ua.ObjectIds.AnalogItemType),
+                ua.ObjectIds.HasTypeDefinition,
+                forward=True,
+                bidirectional=True,
+            )
+
+            range_val = ua.Range(Low=float(min_value), High=float(max_value))
+            await node.add_property(
+                self.namespace_idx,
+                "EURange",
+                ua.Variant(range_val, ua.VariantType.ExtensionObject),
+                datatype=ua.NodeId(ua.ObjectIds.Range),
+            )
+
+            if engineering_units:
+                eu_info = ua.EUInformation(
+                    NamespaceUri=_EU_NAMESPACE_URI,
+                    UnitId=0,
+                    DisplayName=ua.LocalizedText(engineering_units),
+                    Description=ua.LocalizedText(engineering_units),
+                )
+                await node.add_property(
+                    self.namespace_idx,
+                    "EngineeringUnits",
+                    ua.Variant(eu_info, ua.VariantType.ExtensionObject),
+                    datatype=ua.NodeId(ua.ObjectIds.EUInformation),
+                )
+
+            log_debug(
+                f"Promoted {label} to AnalogItemType "
+                f"(EURange={min_value}..{max_value}, units={engineering_units!r})"
+            )
+        except Exception as e:
+            log_warn(f"Failed to promote {label} to AnalogItemType: {e}")
 
     def _check_write_permission(self, permissions: VariablePermissions) -> bool:
         """
