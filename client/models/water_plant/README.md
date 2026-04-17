@@ -100,8 +100,16 @@ The simulator:
   stopping the responsible pumps or bumping the chlorine setpoint.
 - **Setpoint wander** (20 s): random-walks coagulant and chlorine
   setpoints within safe bands so OPC-UA writes remain continuous.
-- **Fault drill** (90 s): injects and clears a fault on a random
-  non-critical piece of equipment.
+- **Incident carousel**: after a ~45 s warm-up, walks a shuffled list of
+  scripted scenarios one at a time. Each scenario injects a fault,
+  waits for the resulting alarm to rise, holds for a few seconds, then
+  "the operator" intervenes (clears the fault, rotates lead pumps,
+  cycles the screen, etc.). The loop then waits for `master_alarm` to
+  clear and holds a standby window before the next incident, so the
+  plant visibly returns to nominal between events. Scenarios: intake
+  screen fault, flash mixer agitator trip, coagulant pump trip, floc
+  basin agitator trip, chlorine pump trip (Cl-residual decay),
+  distribution pump trip. Log lines are tagged `[incident]`.
 
 ## Observe with the CLI
 

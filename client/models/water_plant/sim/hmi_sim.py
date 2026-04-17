@@ -3,7 +3,9 @@
 Connects to the OpenPLC runtime's OPC-UA server as the configured operator,
 drives realistic plant traffic: startup sequencing, lead/lag pump rotation,
 filter-backwash scheduling, rising-edge alarm response with auto-recovery,
-setpoint wander, periodic fault drills, and chemical-stock refills.
+setpoint wander, a scripted incident carousel (distinct faults, operator
+intervention, recovery verification, standby window), and chemical-stock
+refills.
 
 Run after `openplc_client deploy ./models/water_plant`:
 
@@ -18,6 +20,7 @@ import asyncio
 import random
 import signal
 import sys
+import time
 from pathlib import Path
 
 _CLIENT_ROOT = Path(__file__).resolve().parents[3]
@@ -34,21 +37,21 @@ BACKWASH_CHECK_PERIOD_S = 8.0
 BACKWASH_DP_THRESHOLD = 70.0
 ALARM_POLL_PERIOD_S = 1.5
 SETPOINT_WANDER_PERIOD_S = 20.0
-FAULT_DRILL_PERIOD_S = 90.0
 REFILL_CHECK_PERIOD_S = 5.0
 REFILL_DELAY_S = 10.0
+
+# Incident carousel pacing
+INCIDENT_WARMUP_S = 45.0                   # let plant settle before first incident
+INCIDENT_REACT_DELAY_RANGE = (4.0, 10.0)   # operator sees alarm -> responds
+INCIDENT_HOLD_DELAY_RANGE = (8.0, 18.0)    # how long fault is held before clearing
+INCIDENT_STANDBY_RANGE = (18.0, 35.0)      # quiet window after full recovery
+INCIDENT_ALARM_RISE_TIMEOUT_S = 45.0       # how long to wait for injected alarm
+INCIDENT_RECOVERY_TIMEOUT_S = 120.0        # give up and move on if never recovers
+INCIDENT_POLL_S = 1.0
 
 INTAKE_PUMPS = ("intake_pump_01", "intake_pump_02")
 DIST_PUMPS = ("distribution_pump_01", "distribution_pump_02")
 FILTERS = ("filter_01", "filter_02", "filter_03", "filter_04")
-
-FAULT_CANDIDATES = (
-    "intake_screen_fault",
-    "flash_mixer_agitator_fault",
-    "floc_basin_01_agitator_fault",
-    "floc_basin_02_agitator_fault",
-    "coagulant_dosing_pump_fault",
-)
 
 # Alarms that, when active, gate the intake/distribution pump groups off.
 INTAKE_STOP_ALARMS = ("source_reservoir_level_low_alarm", "flash_mixer_level_high_alarm")
@@ -73,6 +76,10 @@ _plant_state: dict = {
     "dist_lead": 0,
     "intake_safe": True,
     "dist_safe": True,
+    # Name of the currently-running incident, or None. Other loops
+    # (rotate) check this to avoid trampling operator actions that a
+    # scenario depends on.
+    "incident_active": None,
 }
 
 
@@ -146,6 +153,8 @@ async def _rotate_loop(m, stop: asyncio.Event) -> None:
             return
         except asyncio.TimeoutError:
             pass
+        if _plant_state.get("incident_active"):
+            continue
         _plant_state["intake_lead"] ^= 1
         _plant_state["dist_lead"] ^= 1
         await _apply_intake_cmds(m)
@@ -265,23 +274,247 @@ async def _setpoint_wander_loop(m, stop: asyncio.Event) -> None:
         await m.write("chlorine_dosing_dose_sp", new_cl)
 
 
-async def _fault_drill_loop(m, stop: asyncio.Event) -> None:
+def _banner(text: str) -> None:
+    print(f"[incident] ===== {text} =====", flush=True)
+
+
+async def _sleep_or_stop(stop: asyncio.Event, secs: float) -> bool:
+    """Sleep up to `secs`; return True if stop triggered while waiting."""
+    try:
+        await asyncio.wait_for(stop.wait(), timeout=secs)
+        return True
+    except asyncio.TimeoutError:
+        return False
+
+
+async def _poll_until(m, predicate, var_names, stop: asyncio.Event,
+                      timeout: float, poll_s: float = INCIDENT_POLL_S) -> bool:
+    """Snapshot `var_names` every poll_s until predicate(snap) or timeout.
+
+    Returns True on predicate hit, False on timeout or stop.
+    """
+    deadline = time.monotonic() + timeout
     while not stop.is_set():
-        try:
-            await asyncio.wait_for(stop.wait(), timeout=FAULT_DRILL_PERIOD_S)
-            return
-        except asyncio.TimeoutError:
-            pass
-        target = random.choice(FAULT_CANDIDATES)
-        await m.write(target, True)
-        print(f"[hmi] fault drill: asserted {target}", flush=True)
-        try:
-            await asyncio.wait_for(stop.wait(), timeout=15.0)
-            return
-        except asyncio.TimeoutError:
-            pass
-        await m.write(target, False)
-        print(f"[hmi] fault drill: cleared {target}", flush=True)
+        snap = await m.snapshot(*var_names)
+        if predicate(snap):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        if await _sleep_or_stop(stop, poll_s):
+            return False
+    return False
+
+
+async def _force_intake_lead(m, lead_idx: int) -> None:
+    _plant_state["intake_lead"] = lead_idx
+    await _apply_intake_cmds(m)
+
+
+async def _force_dist_lead(m, lead_idx: int) -> None:
+    _plant_state["dist_lead"] = lead_idx
+    await _apply_dist_cmds(m)
+
+
+# ----------------------------- Scenarios ------------------------------
+#
+# Each scenario is a single coroutine that runs one incident start-to-end:
+#   INJECT -> WAIT_ALARM (optional) -> HOLD -> OPERATOR_RESPONSE ->
+#   WAIT_RECOVERY.
+# The incident loop wraps each scenario with a STANDBY window that gates
+# on master_alarm == FALSE, so the plant visibly returns to nominal
+# before the next incident starts.
+
+async def _incident_intake_screen_fault(m, stop) -> None:
+    name = "intake_screen_fault"
+    _banner(f"START: {name}  (screen debris trip)")
+    await m.write("intake_screen_fault", True)
+    print("[incident] injected intake_screen_fault; intake outflow will drop", flush=True)
+    await _sleep_or_stop(stop, random.uniform(*INCIDENT_HOLD_DELAY_RANGE))
+    if stop.is_set():
+        return
+    print("[incident] operator cycling intake_screen_cmd and clearing fault", flush=True)
+    await m.write("intake_screen_cmd", False)
+    await asyncio.sleep(0.4)
+    await m.write("intake_screen_cmd", True)
+    await m.write("intake_screen_fault", False)
+    recovered = await _poll_until(
+        m,
+        lambda s: not s["intake_screen_fault"] and not s["master_alarm"],
+        ("intake_screen_fault", "master_alarm"),
+        stop, INCIDENT_RECOVERY_TIMEOUT_S,
+    )
+    _banner(f"{'RECOVERED' if recovered else 'RECOVERY TIMEOUT'}: {name}")
+
+
+async def _incident_flash_mixer_agitator(m, stop) -> None:
+    name = "flash_mixer_agitator_trip"
+    _banner(f"START: {name}")
+    await m.write("flash_mixer_agitator_fault", True)
+    print("[incident] injected flash_mixer_agitator_fault; mixer outflow halts", flush=True)
+    # Wait for the level alarm to cascade (alarm_loop will stop intake for us)
+    await _poll_until(
+        m, lambda s: s["flash_mixer_level_high_alarm"],
+        ("flash_mixer_level_high_alarm",),
+        stop, INCIDENT_ALARM_RISE_TIMEOUT_S,
+    )
+    await _sleep_or_stop(stop, random.uniform(*INCIDENT_HOLD_DELAY_RANGE))
+    if stop.is_set():
+        return
+    print("[incident] operator clearing flash_mixer_agitator_fault", flush=True)
+    await m.write("flash_mixer_agitator_fault", False)
+    recovered = await _poll_until(
+        m,
+        lambda s: not s["flash_mixer_level_high_alarm"] and not s["master_alarm"],
+        ("flash_mixer_level_high_alarm", "master_alarm"),
+        stop, INCIDENT_RECOVERY_TIMEOUT_S,
+    )
+    _banner(f"{'RECOVERED' if recovered else 'RECOVERY TIMEOUT'}: {name}")
+
+
+async def _incident_coagulant_pump_trip(m, stop) -> None:
+    name = "coagulant_pump_trip"
+    _banner(f"START: {name}")
+    await m.write("coagulant_dosing_pump_fault", True)
+    print("[incident] injected coagulant_dosing_pump_fault; dosing halts", flush=True)
+    await _sleep_or_stop(stop, random.uniform(*INCIDENT_HOLD_DELAY_RANGE))
+    if stop.is_set():
+        return
+    print("[incident] operator clearing coagulant_dosing_pump_fault", flush=True)
+    await m.write("coagulant_dosing_pump_fault", False)
+    recovered = await _poll_until(
+        m,
+        lambda s: (not s["coagulant_dosing_pump_fault"]
+                   and s["coagulant_dosing_dose_rate"] > 0.01
+                   and not s["master_alarm"]),
+        ("coagulant_dosing_pump_fault", "coagulant_dosing_dose_rate", "master_alarm"),
+        stop, INCIDENT_RECOVERY_TIMEOUT_S,
+    )
+    _banner(f"{'RECOVERED' if recovered else 'RECOVERY TIMEOUT'}: {name}")
+
+
+async def _incident_floc_basin_agitator(m, stop) -> None:
+    basin = random.choice(("floc_basin_01", "floc_basin_02"))
+    name = f"{basin}_agitator_trip"
+    _banner(f"START: {name}")
+    await m.write(f"{basin}_agitator_fault", True)
+    print(f"[incident] injected {basin}_agitator_fault; basin outflow halts", flush=True)
+    await _poll_until(
+        m, lambda s: s[f"{basin}_level_high_alarm"],
+        (f"{basin}_level_high_alarm",),
+        stop, INCIDENT_ALARM_RISE_TIMEOUT_S,
+    )
+    await _sleep_or_stop(stop, random.uniform(*INCIDENT_HOLD_DELAY_RANGE))
+    if stop.is_set():
+        return
+    print(f"[incident] operator clearing {basin}_agitator_fault", flush=True)
+    await m.write(f"{basin}_agitator_fault", False)
+    recovered = await _poll_until(
+        m,
+        lambda s: (not s[f"{basin}_level_high_alarm"]
+                   and not s["master_alarm"]),
+        (f"{basin}_level_high_alarm", "master_alarm"),
+        stop, INCIDENT_RECOVERY_TIMEOUT_S,
+    )
+    _banner(f"{'RECOVERED' if recovered else 'RECOVERY TIMEOUT'}: {name}")
+
+
+async def _incident_chlorine_pump_trip(m, stop) -> None:
+    name = "chlorine_pump_trip"
+    _banner(f"START: {name}  (Cl residual will decay)")
+    await m.write("chlorine_dosing_pump_fault", True)
+    print("[incident] injected chlorine_dosing_pump_fault", flush=True)
+    # Residual decays slowly: give extra time for cl_low alarm to rise.
+    await _poll_until(
+        m, lambda s: s["contact_tank_cl_low_alarm"],
+        ("contact_tank_cl_low_alarm",),
+        stop, INCIDENT_ALARM_RISE_TIMEOUT_S + 60.0,
+    )
+    await _sleep_or_stop(stop, random.uniform(*INCIDENT_REACT_DELAY_RANGE))
+    if stop.is_set():
+        return
+    print("[incident] operator clearing chlorine_dosing_pump_fault", flush=True)
+    await m.write("chlorine_dosing_pump_fault", False)
+    # Recovery takes a while: Cl residual has to climb above 0.5 again.
+    recovered = await _poll_until(
+        m,
+        lambda s: (not s["contact_tank_cl_low_alarm"]
+                   and not s["chlorine_dosing_pump_fault"]),
+        ("contact_tank_cl_low_alarm", "chlorine_dosing_pump_fault"),
+        stop, INCIDENT_RECOVERY_TIMEOUT_S + 120.0,
+    )
+    _banner(f"{'RECOVERED' if recovered else 'RECOVERY TIMEOUT'}: {name}")
+
+
+async def _incident_distribution_pump_trip(m, stop) -> None:
+    idx = random.choice((0, 1))
+    pump = DIST_PUMPS[idx]
+    name = f"{pump}_trip"
+    _banner(f"START: {name}")
+    await _force_dist_lead(m, idx)          # make sure the faulted pump is the lead
+    await m.write(f"{pump}_fault", True)
+    print(f"[incident] injected {pump}_fault", flush=True)
+    await _sleep_or_stop(stop, random.uniform(*INCIDENT_REACT_DELAY_RANGE))
+    if stop.is_set():
+        return
+    other = DIST_PUMPS[1 - idx]
+    print(f"[incident] operator rotating distribution lead to {other}", flush=True)
+    await _force_dist_lead(m, 1 - idx)
+    await _sleep_or_stop(stop, random.uniform(*INCIDENT_HOLD_DELAY_RANGE))
+    if stop.is_set():
+        return
+    print(f"[incident] operator clearing {pump}_fault", flush=True)
+    await m.write(f"{pump}_fault", False)
+    recovered = await _poll_until(
+        m,
+        lambda s: not s[f"{pump}_fault"] and not s["master_alarm"],
+        (f"{pump}_fault", "master_alarm"),
+        stop, INCIDENT_RECOVERY_TIMEOUT_S,
+    )
+    _banner(f"{'RECOVERED' if recovered else 'RECOVERY TIMEOUT'}: {name}")
+
+
+INCIDENTS = (
+    _incident_intake_screen_fault,
+    _incident_flash_mixer_agitator,
+    _incident_coagulant_pump_trip,
+    _incident_floc_basin_agitator,
+    _incident_chlorine_pump_trip,
+    _incident_distribution_pump_trip,
+)
+
+
+async def _incident_loop(m, stop: asyncio.Event) -> None:
+    # Warmup: let the plant settle and Cl residual climb above 0.5 so
+    # master_alarm is actually FALSE before we start causing trouble.
+    if await _sleep_or_stop(stop, INCIDENT_WARMUP_S):
+        return
+    order = list(INCIDENTS)
+    while not stop.is_set():
+        random.shuffle(order)
+        for scenario in order:
+            if stop.is_set():
+                return
+            _plant_state["incident_active"] = scenario.__name__
+            try:
+                await scenario(m, stop)
+            except Exception as exc:  # pragma: no cover - sim best-effort
+                print(f"[incident] error in {scenario.__name__}: {exc!r}", flush=True)
+            finally:
+                _plant_state["incident_active"] = None
+            if stop.is_set():
+                return
+            # Standby: wait until master_alarm is clear, then sit idle so
+            # the operator can see the plant back at baseline.
+            settled = await _poll_until(
+                m, lambda s: not s["master_alarm"], ("master_alarm",),
+                stop, timeout=45.0,
+            )
+            if not settled:
+                print("[incident] master_alarm still latched; advancing anyway", flush=True)
+            standby = random.uniform(*INCIDENT_STANDBY_RANGE)
+            _banner(f"STANDBY {standby:.0f}s  plant nominal")
+            if await _sleep_or_stop(stop, standby):
+                return
 
 
 async def _refill_tank(m, stock_name: str, label: str) -> None:
@@ -337,7 +570,7 @@ async def run(host: str) -> None:
             _backwash_loop(m, stop),
             _alarm_loop(m, stop),
             _setpoint_wander_loop(m, stop),
-            _fault_drill_loop(m, stop),
+            _incident_loop(m, stop),
             _refill_loop(m, stop),
         )
 
