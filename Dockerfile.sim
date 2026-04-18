@@ -28,7 +28,10 @@ RUN pip install --no-cache-dir -r requirements.txt asyncua \
     && python -m openplc_client setup
 
 COPY docker-entrypoint.sim.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
+RUN apt-get update && apt-get install -y --no-install-recommends dos2unix \
+    && rm -rf /var/lib/apt/lists/* \
+    && dos2unix /app/entrypoint.sh \
+    && chmod +x /app/entrypoint.sh
 
 # Runtime-configurable via docker-compose `environment:`
 ENV MODEL_DIR=/app/client/models/water_plant \

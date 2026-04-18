@@ -51,5 +51,14 @@ python3 -m openplc_client deploy "${MODEL_DIR}" --runtime "${RUNTIME_URL}"
 # Plugins take ~5 s after upload to finish spinning up the fieldbus sockets.
 sleep 5
 
-echo "[sim] starting HMI (host=${HOST_IP})"
-exec python3 "${MODEL_DIR}/sim/hmi_sim.py" --host "${HOST_IP}"
+: "${SIM_MODE:=original}"
+
+if [ "$SIM_MODE" = "extended" ]; then
+    SIM_SCRIPT="${MODEL_DIR}/sim/hmi_sim_extended.py"
+    echo "[sim] SIM_MODE=extended — starting extended HMI with 14 scenarios (host=${HOST_IP})"
+else
+    SIM_SCRIPT="${MODEL_DIR}/sim/hmi_sim.py"
+    echo "[sim] SIM_MODE=original — starting original HMI with 6 scenarios (host=${HOST_IP})"
+fi
+
+exec python3 "${SIM_SCRIPT}" --host "${HOST_IP}"

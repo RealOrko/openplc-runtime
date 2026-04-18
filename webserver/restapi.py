@@ -110,7 +110,7 @@ def create_user():
         users_exist = User.query.first() is not None
     except Exception as e:
         logger.error("Error checking for users: %s", e)
-        return jsonify({"msg": f"User creation error: {e}"}), 401
+        users_exist = False
 
     # if there are no users, we don't need to verify JWT
     if users_exist and verify_jwt_in_request(optional=True) is None:

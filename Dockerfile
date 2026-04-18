@@ -8,7 +8,11 @@ WORKDIR /workdir
 COPY . .
 
 # Setup runtime directory and permissions
-RUN mkdir -p /var/run/runtime && \
+# dos2unix fixes Windows CRLF line endings on shell scripts
+RUN apt-get update && apt-get install -y --no-install-recommends dos2unix && \
+    rm -rf /var/lib/apt/lists/* && \
+    dos2unix install.sh start_openplc.sh scripts/*.sh && \
+    mkdir -p /var/run/runtime && \
     chmod +x install.sh scripts/* start_openplc.sh
 
 # Clean any existing build artifacts to ensure clean Docker build
