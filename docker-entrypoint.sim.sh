@@ -11,6 +11,7 @@ set -e
 
 : "${RUNTIME_REST_PORT:=18443}"
 : "${MODEL_DIR:=/app/client/models/water_plant}"
+: "${HMI_SCRIPT:=hmi_sim.py}"
 
 if [ -z "$HOST_IP" ]; then
     HOST_IP=$(hostname -I | awk '{print $1}')
@@ -51,5 +52,5 @@ python3 -m openplc_client deploy "${MODEL_DIR}" --runtime "${RUNTIME_URL}"
 # Plugins take ~5 s after upload to finish spinning up the fieldbus sockets.
 sleep 5
 
-echo "[sim] starting HMI (host=${HOST_IP})"
-exec python3 "${MODEL_DIR}/sim/hmi_sim.py" --host "${HOST_IP}"
+echo "[sim] starting HMI (host=${HOST_IP} script=${HMI_SCRIPT})"
+exec python3 "${MODEL_DIR}/sim/${HMI_SCRIPT}" --host "${HOST_IP}"
