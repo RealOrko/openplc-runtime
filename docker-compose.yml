@@ -57,29 +57,51 @@ services:
       retries: 3
       start_period: 45s
 
-  water-plant-sim:
-    # Simulator container: waits for the runtime to be ready, deploys the
-    # water_plant model via openplc_client, then runs the HMI simulator
-    # that drives realistic operator traffic over OPC-UA. Both deploy and
-    # HMI use $HOST_IP rather than 127.0.0.1 so the sim is exercising the
-    # runtime exactly as an external client would.
+  sim-orchestrator:
+    # FastAPI service that accepts PLC bundles (program.st + opcua.json +
+    # optional sim.py) via HTTP, deploys them to the runtime, and runs the
+    # sim as a managed subprocess. Boots as an empty shell — no model is
+    # auto-loaded. Clients POST /model to deploy.
     build:
       context: .
-      dockerfile: Dockerfile.sim
-    image: water-plant-sim:local
-    container_name: water-plant-sim
+      dockerfile: sim-orchestrator/Dockerfile
+    image: sim-orchestrator:local
+    container_name: sim-orchestrator
     restart: unless-stopped
 
+    # Host networking so the orchestrator reaches the runtime on
+    # ${HOST_IP}:${RUNTIME_REST_PORT} and exposes its own API on :19443.
     network_mode: host
 
     environment:
+      PORT: "19443"
+      # Leave RUNTIME_URL unset in dev so the entrypoint auto-detects the
+      # host IP via `hostname -I` (matches the previous water-plant-sim
+      # container's behaviour under host networking). In K8s, set this to
+      # the runtime Service DNS name explicitly.
       RUNTIME_REST_PORT: "18443"
       HOST_IP: "${HOST_IP:-}"
-      MODEL_DIR: "/app/client/models/water_plant"
+      RUNTIME_USERNAME: "openplc"
+      RUNTIME_PASSWORD: "openplc"
+      DATA_DIR: "/data"
+
+    volumes:
+      # PVC-equivalent. Persists /data/current so a container restart
+      # resumes the last-loaded bundle (matches the K8s StatefulSet
+      # volumeClaimTemplate behaviour).
+      - sim-orchestrator-data:/data
 
     depends_on:
       openplc-runtime:
         condition: service_healthy
 
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:19443/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
 volumes:
   openplc-runtime-data:
+  sim-orchestrator-data:

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import random
 import signal
 import sys
@@ -577,8 +578,8 @@ async def run(host: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host", default="localhost",
-                        help="Hostname of the runtime (default localhost)")
+    parser.add_argument("--host", default=os.environ.get("PLC_HOST", "localhost"),
+                        help="Hostname of the runtime (default $PLC_HOST or localhost)")
     args = parser.parse_args()
     asyncio.run(run(args.host))
 
