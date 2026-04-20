@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+registry="registry:5000"
+
+declare -a mappings=(
+    "openplc-runtime:local=${registry}/skynet-sim-runtime:latest"
+    "sim-orchestrator:local=${registry}/skynet-sim-executor:latest"
+)
+
+for mapping in "${mappings[@]}"; do
+    src="${mapping%%=*}"
+    dst="${mapping#*=}"
+    docker tag "$src" "$dst"
+    docker push "$dst"
+done
