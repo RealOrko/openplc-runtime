@@ -252,7 +252,14 @@ class TestSubscriptionCycleTimestamp:
 
     @pytest.mark.asyncio
     async def test_cycle_timestamp_updated_each_cycle(self):
-        """Verify cycle timestamp is updated for each sync cycle."""
+        """Verify cycle timestamp is updated for each sync cycle.
+
+        The sync loop is now value-change-gated (see synchronization.py),
+        so for two cycles to produce two DataValue writes the underlying
+        value must actually change between them — which matches realistic
+        PLC behaviour (a variable's timestamp only advances when its
+        value does).
+        """
         from synchronization import SynchronizationManager
 
         mock_server = MockServer()
@@ -275,6 +282,10 @@ class TestSubscriptionCycleTimestamp:
 
         # Small delay
         await asyncio.sleep(0.01)
+
+        # PLC value changes between cycles — this is the condition under
+        # which the second sync fires a new DataValue.
+        mock_buffer.set_value(0, 2)
 
         # Second cycle with new timestamp
         ts2 = datetime.now(timezone.utc)

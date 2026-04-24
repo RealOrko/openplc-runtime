@@ -383,6 +383,13 @@ class SynchronizationManager:
         Update OPC-UA nodes using direct memory access.
 
         This is the optimized path - zero C calls per variable.
+
+        Change detection: we only write an OPC-UA node when the PLC value
+        differs from what we last published. Without this gate, every sync
+        cycle sprays N unchanged DataValue writes at the asyncua server,
+        which silently drops the occasional genuine subscription notification
+        (notably for booleans that toggle on discrete HMI events). The
+        opcua -> runtime direction already gates on the same check.
         """
         for var_index, metadata in self.variable_metadata.items():
             try:
@@ -397,7 +404,11 @@ class SynchronizationManager:
                     datatype=var_node.datatype
                 )
 
+                if not self._has_value_changed(var_index, value):
+                    continue
+
                 await self._update_opcua_node(var_node, value)
+                self.opcua_value_cache[var_index] = value
 
             except Exception as e:
                 log_error(f"Direct memory access failed for var {var_index}: {e}")
@@ -423,13 +434,18 @@ class SynchronizationManager:
         if not results:
             return
 
-        # Process results - individual items may have failed (e.g., no PLC loaded)
+        # Process results - individual items may have failed (e.g., no PLC loaded).
+        # Change detection is applied symmetrically with the direct-memory path
+        # above so the two fallbacks behave identically under subscription load.
         for i, (value, var_msg) in enumerate(results):
             var_index = var_indices[i]
             var_node = self.variable_nodes.get(var_index)
 
             if var_msg == "Success" and value is not None and var_node:
+                if not self._has_value_changed(var_index, value):
+                    continue
                 await self._update_opcua_node(var_node, value)
+                self.opcua_value_cache[var_index] = value
 
     async def _update_opcua_node(self, var_node: VariableNode, value: Any) -> None:
         """
