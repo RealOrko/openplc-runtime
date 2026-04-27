@@ -25,6 +25,13 @@ if _current_dir not in sys.path:
 if _parent_dir not in sys.path:
     sys.path.insert(0, _parent_dir)
 
+# Apply asyncua patches before any sibling module imports asyncua —
+# see _asyncua_patches.py for the spec citation and rationale.
+try:
+    from . import _asyncua_patches  # noqa: F401
+except ImportError:
+    import _asyncua_patches  # noqa: F401
+
 # Import shared modules
 from shared import (
     SafeBufferAccess,

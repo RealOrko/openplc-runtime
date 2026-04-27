@@ -24,6 +24,10 @@ Usage:
     Configuration is provided via JSON file specified in plugins.conf.
 """
 
+# Apply asyncua patches before any sibling module imports asyncua —
+# see _asyncua_patches.py for the spec citation and rationale.
+from . import _asyncua_patches  # noqa: F401
+
 # Re-export plugin interface for runtime compatibility
 from .plugin import init, start_loop, stop_loop, cleanup
 
