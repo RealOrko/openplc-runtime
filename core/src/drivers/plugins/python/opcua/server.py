@@ -30,6 +30,7 @@ try:
     from .address_space import AddressSpaceBuilder
     from .alarm_builder import AlarmBuilder
     from .alarm_manager import AlarmManager
+    from .event_emitter import EventEmitter
     from .synchronization import SynchronizationManager
     from .user_manager import OpenPLCUserManager
     from .callbacks import PermissionCallbackHandler
@@ -41,6 +42,7 @@ except ImportError:
     from address_space import AddressSpaceBuilder
     from alarm_builder import AlarmBuilder
     from alarm_manager import AlarmManager
+    from event_emitter import EventEmitter
     from synchronization import SynchronizationManager
     from user_manager import OpenPLCUserManager
     from callbacks import PermissionCallbackHandler
@@ -107,6 +109,12 @@ class OpcuaServerManager:
         # alarm path is a no-op end-to-end.
         self.alarm_builder: Optional[AlarmBuilder] = None
         self.alarm_manager: Optional[AlarmManager] = None
+
+        # Event emitter for non-AlarmCondition events (audit writes,
+        # audit method calls, system status, generic info). Initialised
+        # post-server.init() in _setup_server. Stays None if its build
+        # step fails — emit_* helpers all no-op in that case.
+        self.event_emitter: Optional[EventEmitter] = None
 
         # Node mappings (populated by address space builder)
         self.variable_nodes: Dict[int, VariableNode] = {}
@@ -270,6 +278,25 @@ class OpcuaServerManager:
                 build_date=datetime.now()
             )
 
+            # Build the non-AlarmCondition event emitter on top of the
+            # initialised server. Must run AFTER server.init() (so the
+            # standard event types are present in the address space)
+            # and BEFORE server.start() (so generators exist when the
+            # first subscription is created). Failures here log and
+            # leave self.event_emitter at None — every emit_* helper
+            # no-ops cleanly in that state.
+            try:
+                self.event_emitter = EventEmitter(self.server)
+                if not await self.event_emitter.build():
+                    log_warn(
+                        "EventEmitter.build() returned False; "
+                        "non-alarm event emission disabled"
+                    )
+                    self.event_emitter = None
+            except Exception as e:
+                log_warn(f"Failed to initialise EventEmitter: {e}")
+                self.event_emitter = None
+
             log_debug("OPC-UA server setup completed successfully")
             return True
 
@@ -294,6 +321,16 @@ class OpcuaServerManager:
             self.running = True
 
             log_info(f"OPC-UA server started on {self.config.server.endpoint_url}")
+
+            # Announce lifecycle to event subscribers — server is up
+            # and accepting client sessions. Best-effort; emit_* logs
+            # internally on failure.
+            if self.event_emitter is not None:
+                await self.event_emitter.emit_system_status(
+                    f"OPC UA server started on {self.config.server.endpoint_url}",
+                    system_state="Running",
+                    severity=200,
+                )
 
             # Print alternative endpoints for client connection
             if self._client_endpoints:
@@ -342,12 +379,26 @@ class OpcuaServerManager:
         Stops the server and releases resources.
         """
         try:
+            # Fire SystemStatusChange BEFORE the actual server.stop() so
+            # subscribers can observe shutdown. Once server.stop() runs
+            # subscriptions tear down; firing afterwards delivers nothing.
+            if self.server and self.running and self.event_emitter is not None:
+                try:
+                    await self.event_emitter.emit_system_status(
+                        "OPC UA server shutting down",
+                        system_state="Shutdown",
+                        severity=200,
+                    )
+                except Exception as e:
+                    log_debug(f"shutdown event emission failed: {e}")
+
             if self.server and self.running:
                 await self.server.stop()
                 log_info("OPC-UA server stopped")
 
             self.running = False
             self.server = None
+            self.event_emitter = None
 
             # Clean up security manager resources (temp directories, etc.)
             if self.security_manager:
@@ -418,6 +469,7 @@ class OpcuaServerManager:
                 buffer_accessor=self.buffer_accessor,
                 runtime=self.alarm_builder.runtime,
                 server=self.server,
+                event_emitter=self.event_emitter,
             )
             await self.alarm_manager.initialize()
         except Exception as e:
@@ -441,6 +493,8 @@ class OpcuaServerManager:
                 variable_nodes=self.variable_nodes,
                 server=self.server,  # Pass server for subscription support
                 alarm_manager=self.alarm_manager,
+                event_emitter=self.event_emitter,
+                nodeid_to_path=self.nodeid_to_variable,
             )
 
             if not await self.sync_manager.initialize():

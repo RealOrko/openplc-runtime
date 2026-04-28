@@ -74,10 +74,16 @@ class AlarmManager:
         buffer_accessor: SafeBufferAccess,
         runtime: List[AlarmRuntime],
         server: Optional[Server] = None,
+        event_emitter: Optional[object] = None,
     ):
         self.buffer_accessor = buffer_accessor
         self.runtime = runtime
         self.server = server
+        # EventEmitter is optional — when present, Acknowledge / Confirm
+        # method calls also fire AuditUpdateMethodEventType so the
+        # audit trail of operator interventions is observable on the
+        # event stream. None → no-op.
+        self.event_emitter = event_emitter
         # Parallel array (same order as self.runtime) of cached state.
         self.state: List[_AlarmState] = [_AlarmState() for _ in runtime]
         # Lookup helpers used by the Acknowledge/Confirm method handlers.
@@ -187,6 +193,23 @@ class AlarmManager:
         st.acked = True
         log_info(f"alarm {ar.alarm.node_id}: Acknowledged")
         await self._fire_event(ar, st, st.input_bools)
+        # Audit trail: a non-AlarmCondition event recording who called
+        # Acknowledge on which Condition. Lets downstream observers
+        # distinguish "alarm cleared by physics" from "alarm cleared by
+        # operator action" on the event stream alone.
+        if self.event_emitter is not None:
+            try:
+                await self.event_emitter.emit_audit_method(
+                    method_node_id=None,
+                    method_name="Acknowledge",
+                    target_node_id=ar.condition_node.nodeid,
+                    target_name=ar.alarm.browse_name,
+                    input_args=[bytes(event_id) if isinstance(event_id, (bytes, bytearray))
+                                else (str(event_id) if event_id is not None else "")],
+                    status_ok=True,
+                )
+            except Exception as e:
+                log_debug(f"audit emit (Acknowledge) failed: {e}")
         return ua.StatusCode()
 
     async def _handle_confirm(self, idx: int, event_id, comment):
@@ -201,6 +224,19 @@ class AlarmManager:
         st.confirmed = True
         log_info(f"alarm {ar.alarm.node_id}: Confirmed")
         await self._fire_event(ar, st, st.input_bools)
+        if self.event_emitter is not None:
+            try:
+                await self.event_emitter.emit_audit_method(
+                    method_node_id=None,
+                    method_name="Confirm",
+                    target_node_id=ar.condition_node.nodeid,
+                    target_name=ar.alarm.browse_name,
+                    input_args=[bytes(event_id) if isinstance(event_id, (bytes, bytearray))
+                                else (str(event_id) if event_id is not None else "")],
+                    status_ok=True,
+                )
+            except Exception as e:
+                log_debug(f"audit emit (Confirm) failed: {e}")
         return ua.StatusCode()
 
     async def process_cycle(self) -> None:

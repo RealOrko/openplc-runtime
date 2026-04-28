@@ -88,6 +88,8 @@ class SynchronizationManager:
         variable_nodes: Dict[int, VariableNode],
         server: Optional[Server] = None,
         alarm_manager: Optional[Any] = None,
+        event_emitter: Optional[Any] = None,
+        nodeid_to_path: Optional[Dict[Any, str]] = None,
     ):
         """
         Initialize the synchronization manager.
@@ -99,11 +101,22 @@ class SynchronizationManager:
             alarm_manager: Optional AlarmManager whose process_cycle() is
                 called once per scan cycle right after sync, so A&C
                 events fire on the same cadence as PLC value updates.
+            event_emitter: Optional EventEmitter. When present, a
+                detected client write to a readwrite node fires an
+                AuditWriteUpdateEventType so operator actions are
+                observable on the event stream (not just the
+                data-change stream). None → audit-write emission is
+                a no-op end-to-end.
         """
         self.buffer_accessor = buffer_accessor
         self.variable_nodes = variable_nodes
         self.server = server
         self.alarm_manager = alarm_manager
+        self.event_emitter = event_emitter
+        # Optional NodeId -> dotted-path lookup for audit-write events.
+        # When absent we fall back to NodeId.to_string() in
+        # _emit_audit_write — still useful, just less readable.
+        self.nodeid_to_path: Dict[Any, str] = nodeid_to_path or {}
 
         # Optimization: metadata cache for direct memory access
         self.variable_metadata: Dict[int, VariableMetadata] = {}
@@ -312,6 +325,8 @@ class SynchronizationManager:
 
                                 # Check if element has changed
                                 if self._has_value_changed(elem_index, plc_value):
+                                    old_value = self.opcua_value_cache.get(elem_index)
+                                    had_prior = elem_index in self.opcua_value_cache
                                     if is_time_type and isinstance(plc_value, tuple):
                                         tv_sec, tv_nsec = plc_value
                                         time_writes.append((elem_index, tv_sec, tv_nsec))
@@ -319,6 +334,10 @@ class SynchronizationManager:
                                         values_to_write.append(plc_value)
                                         indices_to_write.append(elem_index)
                                     self.opcua_value_cache[elem_index] = plc_value
+                                    if had_prior:
+                                        await self._emit_audit_write(
+                                            var_node, elem_index, old_value, plc_value
+                                        )
                         continue
 
                     # Handle scalar value
@@ -326,6 +345,8 @@ class SynchronizationManager:
 
                     # Check if value has changed
                     if self._has_value_changed(var_index, plc_value):
+                        old_value = self.opcua_value_cache.get(var_index)
+                        had_prior = var_index in self.opcua_value_cache
                         if is_time_type and isinstance(plc_value, tuple):
                             # TIME values need direct memory access
                             tv_sec, tv_nsec = plc_value
@@ -336,6 +357,16 @@ class SynchronizationManager:
 
                         # Update cache
                         self.opcua_value_cache[var_index] = plc_value
+
+                        # Audit-trail event. Skip the very first cycle
+                        # for each index — that's not a client write,
+                        # just the initial poll seeding the cache. From
+                        # the second cycle onwards a delta means a
+                        # client wrote.
+                        if had_prior:
+                            await self._emit_audit_write(
+                                var_node, var_index, old_value, plc_value
+                            )
 
                 except Exception as e:
                     log_error(f"Error reading OPC-UA variable {var_index}: {e}")
@@ -622,6 +653,37 @@ class SynchronizationManager:
 
         except Exception as e:
             log_error(f"Error in batch write: {e}")
+
+    async def _emit_audit_write(
+        self,
+        var_node: VariableNode,
+        var_index: int,
+        old_value: Any,
+        new_value: Any,
+    ) -> None:
+        """Fire an AuditWriteUpdateEventType for a detected client
+        write. Best-effort: a stray exception in event-payload land
+        must not break the sync cycle.
+
+        ClientUserId is set to "unknown" — the polling pattern can't
+        attribute the write to a specific session because the actual
+        Write request was processed by asyncua's MonitoredItemService
+        well before this delta is observed. Hooking write callbacks at
+        the asyncua layer would let us identify the user, but that's a
+        deeper integration change."""
+        if self.event_emitter is None:
+            return
+        try:
+            node_path = self.nodeid_to_path.get(var_node.node.nodeid) or str(var_node.node.nodeid)
+            await self.event_emitter.emit_audit_write(
+                node_id=var_node.node.nodeid,
+                node_path=node_path,
+                old_value=old_value,
+                new_value=new_value,
+                client_user_id="unknown",
+            )
+        except Exception as e:
+            log_debug(f"emit_audit_write failed for var_index={var_index}: {e}")
 
     def _has_value_changed(self, var_index: int, new_value: Any) -> bool:
         """
